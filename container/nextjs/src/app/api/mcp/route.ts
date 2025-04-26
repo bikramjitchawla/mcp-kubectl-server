@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { RequestStore } from "@/memory/requestStore";
+import { RequestStore } from "@/app/memory/requestStore";
 
 export async function POST(req: NextRequest) {
   const mcpRequest = await req.json();

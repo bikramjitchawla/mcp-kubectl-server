@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { MCPRequest } from "@/types/mcp";
+import { MCPRequest } from "@/app/types/mcp";
 import { execSync } from "child_process";
 
 export class MCPAgentRunner {

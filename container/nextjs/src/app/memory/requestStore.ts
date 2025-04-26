@@ -1,4 +1,4 @@
-import { MCPRequest } from "@/types/mcp";
+import { MCPRequest } from "@/app/types/mcp";
 
 const pendingRequests: MCPRequest[] = [];
 

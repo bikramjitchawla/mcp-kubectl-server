@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { RequestStore } from "@/memory/requestStore";
-import { MCPAgentRunner } from "@/agents/mcpagentrunner";
+import { RequestStore } from "@/app/memory/requestStore";
+import { MCPAgentRunner } from "@/app/agents/mcpagentrunner";
 
 
 export async function POST(req: NextRequest) {
