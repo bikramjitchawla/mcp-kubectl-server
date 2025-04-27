@@ -6,3 +6,9 @@ export async function POST(req: NextRequest) {
   RequestStore.add(mcpRequest);
   return NextResponse.json({ message: "MCP Request stored." });
 }
+
+
+export async function GET() {
+  const allRequests = RequestStore.getAll();
+  return NextResponse.json({ requests: allRequests });
+}

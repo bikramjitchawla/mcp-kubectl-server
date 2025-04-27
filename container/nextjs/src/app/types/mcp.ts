@@ -1,5 +1,5 @@
 export interface MCPRequest {
-    id: string; // UUID
+    id: string; 
     agent: string;
     goal: string;
     memory: Record<string, any>;

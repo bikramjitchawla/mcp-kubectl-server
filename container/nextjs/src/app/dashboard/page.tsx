@@ -9,6 +9,7 @@ interface MCPRequest {
 
 export default function Dashboard() {
   const [requests, setRequests] = useState<MCPRequest[]>([]);
+  const [output, setOutput] = useState<string>("");
 
   useEffect(() => {
     const interval = setInterval(fetchRequests, 2000);
@@ -24,17 +25,23 @@ export default function Dashboard() {
   };
 
   const makeDecision = async (id: string, decision: "allow" | "deny") => {
-    await fetch('/api/decision', {
+    const res = await fetch('/api/decision', {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, decision })
     });
+
+    const data = await res.json();
+    if (decision === "allow") {
+      setOutput(data.output);   // show agent result!
+    }
     fetchRequests();
   };
 
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold mb-4">Pending Agent Requests</h1>
+
       <div className="space-y-4">
         {requests.map(req => (
           <div key={req.id} className="border p-4 rounded shadow-sm">
@@ -57,6 +64,13 @@ export default function Dashboard() {
           </div>
         ))}
       </div>
+
+      {output && (
+        <div className="mt-8 p-4 border rounded bg-gray-100">
+          <h2 className="text-xl font-semibold mb-2">Agent Response:</h2>
+          <pre>{output}</pre>
+        </div>
+      )}
     </div>
   );
 }

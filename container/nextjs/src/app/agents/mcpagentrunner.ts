@@ -1,4 +1,6 @@
 import OpenAI from "openai";
+import { DiagnoserAgent } from "@/app/agents/diagnoserAgent";
+import { FixerAgent } from "@/app/agents/fixerAgent";
 import { MCPRequest } from "@/app/types/mcp";
 import { execSync } from "child_process";
 
@@ -7,7 +9,8 @@ export class MCPAgentRunner {
 
   constructor() {
     this.openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
+      apiKey: process.env.GROQ_API_KEY,   // your Groq API key
+      baseURL: "https://api.groq.com/openai/v1"
     });
   }
 
@@ -16,27 +19,25 @@ export class MCPAgentRunner {
 
     if (mcp.tools.includes("kubectl")) {
       try {
-        toolOutput = execSync("kubectl get pods -n default").toString();
+        toolOutput = execSync(`kubectl get pods -n ${mcp.input_context.namespace}`).toString();
       } catch (error) {
         toolOutput = `Error running kubectl: ${error}`;
       }
     }
 
-    const prompt = `
-Agent: ${mcp.agent}
-Goal: ${mcp.goal}
-Input Context: ${JSON.stringify(mcp.input_context)}
-Tool Output:
-${toolOutput}
+    // Step 1: Diagnoser Agent
+    const diagnosis = await DiagnoserAgent(toolOutput, this.openai);
 
-Please format your response as ${mcp.output_expectation.format} including ${mcp.output_expectation.includes.join(", ")}
-`;
+    // Step 2: Fixer Agent
+    const fix = await FixerAgent(diagnosis, this.openai);
 
-    const res = await this.openai.chat.completions.create({
-      model: "gpt-4",
-      messages: [{ role: "user", content: prompt }],
-    });
+    return `
+# Diagnosis:
+${diagnosis}
 
-    return res.choices[0].message?.content || '';
+# Suggested Fix:
+${fix}
+
+    `;
   }
 }
