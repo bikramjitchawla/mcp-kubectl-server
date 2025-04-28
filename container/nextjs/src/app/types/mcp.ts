@@ -1,13 +1,11 @@
-export interface MCPRequest {
-    id: string; 
-    agent: string;
-    goal: string;
-    memory: Record<string, any>;
-    tools: string[];
-    input_context: Record<string, any>;
-    output_expectation: {
-      format: string;
-      includes: string[];
-    };
-  }
-  
+export type MCPRequest = {
+  id: string;
+  agent: string;
+  goal: string;
+  tools: string[];
+  input_context: { [key: string]: any };
+  output_expectation: {
+    format: "markdown" | "json" | "text";
+    includes: string[];
+  };
+};

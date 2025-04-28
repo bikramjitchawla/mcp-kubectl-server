@@ -1,6 +1,4 @@
 import OpenAI from "openai";
-import { DiagnoserAgent } from "@/app/agents/diagnoserAgent";
-import { FixerAgent } from "@/app/agents/fixerAgent";
 import { MCPRequest } from "@/app/types/mcp";
 import { execSync } from "child_process";
 
@@ -9,8 +7,8 @@ export class MCPAgentRunner {
 
   constructor() {
     this.openai = new OpenAI({
-      apiKey: process.env.GROQ_API_KEY,   // your Groq API key
-      baseURL: "https://api.groq.com/openai/v1"
+      apiKey: process.env.GROQ_API_KEY,
+      baseURL: "https://api.groq.com/openai/v1",
     });
   }
 
@@ -25,19 +23,21 @@ export class MCPAgentRunner {
       }
     }
 
-    // Step 1: Diagnoser Agent
-    const diagnosis = await DiagnoserAgent(toolOutput, this.openai);
+    const prompt = `
+Agent: ${mcp.agent}
+Goal: ${mcp.goal}
+Input Context: ${JSON.stringify(mcp.input_context)}
+Tool Output:
+${toolOutput}
 
-    // Step 2: Fixer Agent
-    const fix = await FixerAgent(diagnosis, this.openai);
+Please format your response as ${mcp.output_expectation.format} including ${mcp.output_expectation.includes.join(", ")}
+`;
 
-    return `
-# Diagnosis:
-${diagnosis}
+    const res = await this.openai.chat.completions.create({
+      model: "mixtral-8x7b-32768",
+      messages: [{ role: "user", content: prompt }],
+    });
 
-# Suggested Fix:
-${fix}
-
-    `;
+    return res.choices[0].message?.content || '';
   }
 }

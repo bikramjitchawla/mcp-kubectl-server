@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { RequestStore } from "@/app/memory/requestStore";
+import { MCPRequest } from "@/app/types/mcp"; // <-- important import!
+import { MCPAgentRunner } from "@/app/agents/mcpagentrunner";
 
 export async function POST(req: NextRequest) {
-  const mcpRequest = await req.json();
-  RequestStore.add(mcpRequest);
-  return NextResponse.json({ message: "MCP Request stored." });
-}
+  const mcpRequest: MCPRequest = await req.json();
 
+  const runner = new MCPAgentRunner();
+  const agentOutput = await runner.run(mcpRequest);
 
-export async function GET() {
-  const allRequests = RequestStore.getAll();
-  return NextResponse.json({ requests: allRequests });
+  return NextResponse.json({
+    agent: mcpRequest.agent,
+    goal: mcpRequest.goal,
+    result: agentOutput
+  });
 }
