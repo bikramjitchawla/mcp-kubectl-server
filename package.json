@@ -1,0 +1,22 @@
+{
+    "name": "ai-mcp-server",
+    "version": "1.0.0",
+    "scripts": {
+        "dev": "next dev",
+        "build": "next build",
+        "start": "next start"
+    },
+    "dependencies": {
+        "next": "^14.0.0",
+        "openai": "^4.0.0",
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "uuid": "^9.0.0"
+    },
+    "devDependencies": {
+        "@types/react": "^19.1.2",
+        "@types/react-dom": "^19.1.2",
+        "@types/uuid": "^10.0.0",
+        "typescript": "^5.0.0"
+    }
+}
