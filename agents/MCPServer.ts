@@ -1,14 +1,18 @@
-// agents/MCPServer.ts
-
 import { v4 as uuidv4 } from "uuid";
-import { allTools } from "./tools/tool"; 
+import { allTools } from "./tools/tool";
 
 export type ToolHandler = (input: Record<string, any>) => Promise<Record<string, any>>;
+
+interface ToolParameter {
+  type: string;
+  description: string;
+  required: boolean;
+}
 
 interface Tool {
   name: string;
   description: string;
-  parameters: Record<string, { type: string; description: string; required: boolean }>;
+  parameters: Record<string, ToolParameter>;
   handler: ToolHandler;
 }
 
@@ -17,7 +21,18 @@ export class MCPServer {
 
   constructor() {
     for (const tool of allTools) {
-      this.registerTool(tool);
+      // Ensure tool.parameters are well-formed (optional runtime cleanup)
+      const cleanParams: Record<string, ToolParameter> = {};
+      for (const [key, val] of Object.entries(tool.parameters || {})) {
+        if (val && typeof val.type === "string" && typeof val.description === "string") {
+          cleanParams[key] = {
+            type: val.type,
+            description: val.description,
+            required: !!val.required,
+          };
+        }
+      }
+      this.registerTool({ ...tool, parameters: cleanParams });
     }
   }
 
