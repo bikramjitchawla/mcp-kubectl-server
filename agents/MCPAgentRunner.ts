@@ -10,7 +10,7 @@ export class MCPAgentRunner {
     });
   }
 
-  async runAgentPrompt(prompt: string, model: string = "mixtral-8x7b-32768") {
+  async runAgentPrompt(prompt: string, model: string = "llama-3.1-8b-instant") {
     const response = await this.openai.chat.completions.create({
       model,
       messages: [

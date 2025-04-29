@@ -8,11 +8,7 @@ export async function POST(req: Request) {
   try {
     const response = await server.handleMessage(body);
 
-    if (response?.result) {
-      return Response.json(response.result);
-    } else {
-      return Response.json(response.error || { error: "Unknown error occurred" }, { status: 400 });
-    }
+    return Response.json(response);
   } catch (error) {
     console.error("Error handling MCP request:", error);
     return Response.json({ error: "Internal server error" }, { status: 500 });

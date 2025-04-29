@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from "react";
+import { Button, TextField, Typography, Box } from "@mui/material";
 
 export default function MCPForm({ onResult }: { onResult: (result: any) => void }) {
   const [query, setQuery] = useState("");
@@ -12,7 +13,7 @@ export default function MCPForm({ onResult }: { onResult: (result: any) => void 
       id: "uuid-" + Math.random().toString(36).substr(2, 9),
       method: "mcp.tool.call",
       params: {
-        name: "naturalLanguageKubectl", // hardcoded tool name
+        name: "naturalLanguageKubectl",
         input: { query },
       },
     };
@@ -28,28 +29,25 @@ export default function MCPForm({ onResult }: { onResult: (result: any) => void 
   }
 
   return (
-    <form onSubmit={handleSubmit}>
-      <textarea
-        placeholder="Enter your query or input..."
+    <Box component="form" onSubmit={handleSubmit} sx={{ mt: 2 }}>
+      <Typography variant="h6" gutterBottom>
+        Enter your Kubernetes query:
+      </Typography>
+      <TextField
+        label="Query"
+        placeholder="e.g., get the namespaces"
+        multiline
+        minRows={4}
+        fullWidth
         value={query}
         onChange={(e) => setQuery(e.target.value)}
+        variant="outlined"
+        margin="normal"
         required
-        style={{ width: "100%", height: "100px", marginTop: "10px" }}
       />
-
-      <button
-        type="submit"
-        style={{
-          marginTop: "10px",
-          display: "block",
-          background: "#0070f3",
-          color: "white",
-          padding: "10px",
-          borderRadius: "5px",
-        }}
-      >
+      <Button variant="contained" type="submit">
         Submit
-      </button>
-    </form>
+      </Button>
+    </Box>
   );
 }

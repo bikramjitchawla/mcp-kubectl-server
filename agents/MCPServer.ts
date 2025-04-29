@@ -1,14 +1,12 @@
-import { v4 as uuidv4 } from 'uuid';
-import { echoTool } from './tools/echoTool';
-import { naturalLanguageKubectlTool } from './tools/naturalLanguageKubectlTool';
-import { scaleDeploymentTool } from './tools/scaleDeploymentTool';
-import { logsFetcherTool } from './tools/logsFetcherTool';
-import { rolloutCheckerTool } from './tools/rolloutCheckerTool';
-import { namespaceAnalyzerTool } from './tools/namespaceAnalyzerTool';
+// agents/MCPServer.ts
+
+import { v4 as uuidv4 } from "uuid";
+import { allTools } from "./tools/tool"; 
 
 export type ToolHandler = (input: Record<string, any>) => Promise<Record<string, any>>;
 
 interface Tool {
+  name: string;
   description: string;
   parameters: Record<string, { type: string; description: string; required: boolean }>;
   handler: ToolHandler;
@@ -18,26 +16,13 @@ export class MCPServer {
   private tools: Map<string, Tool> = new Map();
 
   constructor() {
-    this.registerTool("echo", "Simple echo tool", { message: { type: "string", description: "Text to echo", required: true } }, echoTool);
-    this.registerTool("naturalLanguageKubectl", "Natural language to kubectl", { query: { type: "string", description: "Query text", required: true } }, naturalLanguageKubectlTool);
-    this.registerTool("scaleDeployment", "Scale a Kubernetes deployment", {
-      deployment: { type: "string", description: "Deployment name", required: true },
-      replicas: { type: "number", description: "Number of replicas", required: true },
-      namespace: { type: "string", description: "Namespace (optional)", required: false }
-    }, scaleDeploymentTool);
-    this.registerTool("logsFetcher", "Fetch logs for a pod", {
-      podName: { type: "string", description: "Pod name", required: true },
-      namespace: { type: "string", description: "Namespace", required: false }
-    }, logsFetcherTool);
-    this.registerTool("rolloutChecker", "Check rollout status of a deployment", {
-      deployment: { type: "string", description: "Deployment name", required: true },
-      namespace: { type: "string", description: "Namespace", required: false }
-    }, rolloutCheckerTool);
-    this.registerTool("namespaceAnalyzer", "Analyze all Kubernetes namespaces", {}, namespaceAnalyzerTool);
+    for (const tool of allTools) {
+      this.registerTool(tool);
+    }
   }
 
-  registerTool(name: string, description: string, parameters: Record<string, { type: string; description: string; required: boolean }>, handler: ToolHandler) {
-    this.tools.set(name, { description, parameters, handler });
+  registerTool(tool: Tool) {
+    this.tools.set(tool.name, tool);
   }
 
   async handleMessage(message: any) {
@@ -46,7 +31,7 @@ export class MCPServer {
     const id = message.id || uuidv4();
 
     switch (message.method) {
-      case "mcp.tool.call":
+      case "mcp.tool.call": {
         const toolName = message.params?.name;
         const toolInput = message.params?.input || {};
 
@@ -55,12 +40,25 @@ export class MCPServer {
         }
 
         const tool = this.tools.get(toolName)!;
+
         try {
           const result = await tool.handler(toolInput);
           return { jsonrpc: "2.0", id, result };
         } catch (error) {
+          console.error("Error running tool:", error);
           return { jsonrpc: "2.0", id, error: { code: -32603, message: `Error running tool: ${String(error)}` } };
         }
+      }
+
+      case "mcp.tools.list": {
+        const toolList = Array.from(this.tools.values()).map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+        }));
+
+        return { jsonrpc: "2.0", id, result: { tools: toolList } };
+      }
 
       default:
         return { jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown method: ${message.method}` } };

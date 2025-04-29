@@ -1,11 +1,13 @@
-export type MCPRequest = {
-  id: string;
-  agent: string;
-  goal: string;
-  tools: string[];
-  input_context: { [key: string]: any };
-  output_expectation: {
-    format: "markdown" | "json" | "text";
-    includes: string[];
-  };
+export type ToolParameter = {
+  type: string;
+  description: string;
+  required: boolean;
+};
+
+export type ToolHandler = (input: Record<string, any>) => Promise<Record<string, any>>;
+
+export type Tool = {
+  description: string;
+  parameters: Record<string, ToolParameter>;
+  handler: ToolHandler;
 };

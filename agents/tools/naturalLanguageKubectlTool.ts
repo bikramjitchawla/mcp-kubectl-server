@@ -9,14 +9,16 @@ export const naturalLanguageKubectlTool = async (input: Record<string, any>) => 
   if (!nlQuery) {
     throw new Error("Missing 'query' input");
   }
-
-  // Step 1: Send prompt to Groq
   const prompt = `
 You are a Kubernetes expert.
-Given the user's request, generate a SAFE kubectl command.
-Only use 'kubectl get', 'kubectl describe', 'kubectl logs' commands.
-Never generate commands like delete, patch, edit, etc.
-Just reply with the command, no explanation.
+Given the user's request, generate the correct kubectl or helm CLI command.
+You are allowed to use:
+- kubectl get, describe, logs
+- kubectl exec, port-forward, scale, rollout, explain
+- helm install, helm upgrade, helm uninstall
+You must NEVER generate dangerous commands like delete, patch, edit, unless the user specifically asks for it.
+
+Reply ONLY with the CLI command (no markdown, no explanation).
 
 User Request:
 "${nlQuery}"
@@ -25,12 +27,13 @@ User Request:
   let kubectlCommand: string;
 
   try {
-    kubectlCommand = await agentRunner.runAgentPrompt(prompt, "mixtral-8x7b-32768");  // or "gpt-4" if using OpenAI
+    kubectlCommand = await agentRunner.runAgentPrompt(prompt, "llama3-8b-8192");  // Best for Groq
     kubectlCommand = kubectlCommand.trim();
   } catch (error: any) {
-    console.error("Error talking to Groq:", error.message);
+    console.error("❌ Error talking to Groq:", error.message);
     return { error: "Failed to connect to AI agent." };
   }
+
   try {
     const output = execSync(kubectlCommand).toString();
     return {
