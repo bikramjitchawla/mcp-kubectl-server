@@ -1,4 +1,5 @@
 'use client';
+
 import { useState } from "react";
 import MCPForm from "@/components/MCPForm";
 import MCPResult from "@/components/MCPResult";
