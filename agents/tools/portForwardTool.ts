@@ -1,17 +1,34 @@
-import { runKubectlCommand } from "@/utils/kubectlUtils";
+import { spawn } from "child_process";
 
 export const portForwardTool = async (input: Record<string, any>) => {
-  const { podName, localPort, remotePort, namespace = "default" } = input;
+  const { podName, namespace = "default", localPort, remotePort } = input;
 
-  if (!podName || !localPort || !remotePort) {
-    throw new Error("Missing required parameters: podName, localPort, remotePort");
-  }
+  const cmd = `kubectl port-forward pod/${podName} -n ${namespace} ${localPort}:${remotePort}`;
+  console.log("Running port-forward:", cmd);
 
-  const command = `kubectl port-forward pod/${podName} ${localPort}:${remotePort} -n ${namespace}`;
-  const result = await runKubectlCommand(command);
+  const child = spawn("kubectl", [
+    "port-forward",
+    `pod/${podName}`,
+    `${localPort}:${remotePort}`,
+    "-n",
+    namespace,
+  ]);
+
+  child.stdout.on("data", (data) => {
+    console.log(`port-forward stdout: ${data}`);
+  });
+
+  child.stderr.on("data", (data) => {
+    console.error(`port-forward stderr: ${data}`);
+  });
+
+  child.on("close", (code) => {
+    console.log(`port-forward process exited with code ${code}`);
+  });
 
   return {
-    content: [{ type: "text", text: `Started port-forward: ${localPort} -> ${remotePort}` }],
-    details: result,
+    status: "started",
+    message: `Port forwarding ${localPort} → ${remotePort} for pod ${podName} in namespace ${namespace}`,
+    note: "This command runs in background. You must stop it manually if needed.",
   };
 };

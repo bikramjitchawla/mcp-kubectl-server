@@ -1,18 +1,14 @@
+// agents/MCPServer.ts
+
 import { v4 as uuidv4 } from "uuid";
 import { allTools } from "./tools/tool";
 
 export type ToolHandler = (input: Record<string, any>) => Promise<Record<string, any>>;
 
-interface ToolParameter {
-  type: string;
-  description: string;
-  required: boolean;
-}
-
 interface Tool {
   name: string;
   description: string;
-  parameters: Record<string, ToolParameter>;
+  parameters: Record<string, { type: string; description: string; required: boolean }>;
   handler: ToolHandler;
 }
 
@@ -21,18 +17,23 @@ export class MCPServer {
 
   constructor() {
     for (const tool of allTools) {
-      // Ensure tool.parameters are well-formed (optional runtime cleanup)
-      const cleanParams: Record<string, ToolParameter> = {};
-      for (const [key, val] of Object.entries(tool.parameters || {})) {
-        if (val && typeof val.type === "string" && typeof val.description === "string") {
-          cleanParams[key] = {
-            type: val.type,
-            description: val.description,
-            required: !!val.required,
-          };
-        }
-      }
-      this.registerTool({ ...tool, parameters: cleanParams });
+      const validParameters: Tool["parameters"] = Object.fromEntries(
+        Object.entries(tool.parameters).filter(
+          ([_, param]) =>
+            param !== undefined &&
+            typeof param === "object" &&
+            typeof param.type === "string" &&
+            typeof param.description === "string" &&
+            typeof param.required === "boolean"
+        )
+      );
+
+      this.registerTool({
+        name: tool.name,
+        description: tool.description,
+        parameters: validParameters,
+        handler: tool.handler,
+      });
     }
   }
 
@@ -51,7 +52,11 @@ export class MCPServer {
         const toolInput = message.params?.input || {};
 
         if (!toolName || !this.tools.has(toolName)) {
-          return { jsonrpc: "2.0", id, error: { code: -32601, message: `Tool not found: ${toolName}` } };
+          return {
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32601, message: `Tool not found: ${toolName}` },
+          };
         }
 
         const tool = this.tools.get(toolName)!;
@@ -60,8 +65,12 @@ export class MCPServer {
           const result = await tool.handler(toolInput);
           return { jsonrpc: "2.0", id, result };
         } catch (error) {
-          console.error("Error running tool:", error);
-          return { jsonrpc: "2.0", id, error: { code: -32603, message: `Error running tool: ${String(error)}` } };
+          console.error(`Error executing tool "${toolName}":`, error);
+          return {
+            jsonrpc: "2.0",
+            id,
+            error: { code: -32603, message: `Error running tool: ${String(error)}` },
+          };
         }
       }
 
@@ -71,12 +80,15 @@ export class MCPServer {
           description: tool.description,
           parameters: tool.parameters,
         }));
-
         return { jsonrpc: "2.0", id, result: { tools: toolList } };
       }
 
       default:
-        return { jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown method: ${message.method}` } };
+        return {
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32601, message: `Unknown method: ${message.method}` },
+        };
     }
   }
 }

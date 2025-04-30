@@ -5,6 +5,7 @@ import { getPodEventsTool } from "./getPodEventsTool";
 import { explainKubeResultTool } from "./explainKubeResultTool";
 import { naturalLanguageKubectlTool } from "./naturalLanguageKubectlTool";
 import { logsFetcherTool } from "./logsFetcherTool";
+import { monitoringTool } from "./monitoringtool";
 
 export const allTools = [
   {
@@ -70,5 +71,27 @@ export const allTools = [
       output: { type: "string", description: "Output from the kubectl command", required: true },
     },
     handler: explainKubeResultTool,
+  },
+  {
+    name: "monitoringTool",
+    description: "Perform monitoring operations like resource tracking, pod health, events, etc.",
+    parameters: {
+      type: {
+        type: "string",
+        description: "Monitoring type: cluster-health | resource-usage | node-capacity | events | pod-health",
+        required: true,
+      },
+      namespace: {
+        type: "string",
+        description: "Namespace for the resource (optional)",
+        required: false,
+      },
+      podName: {
+        type: "string",
+        description: "Pod name for health checks (required for pod-health)",
+        required: false,
+      },
+    },
+    handler: monitoringTool,
   },
 ];

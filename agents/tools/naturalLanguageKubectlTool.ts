@@ -9,41 +9,46 @@ export const naturalLanguageKubectlTool = async (input: Record<string, any>) => 
   if (!nlQuery) {
     throw new Error("Missing 'query' input");
   }
+
+  // Step 1: Better prompt for Groq/OpenAI
   const prompt = `
-You are a Kubernetes expert.
-Given the user's request, generate the correct kubectl or helm CLI command.
-You are allowed to use:
-- kubectl get, describe, logs
-- kubectl exec, port-forward, scale, rollout, explain
-- helm install, helm upgrade, helm uninstall
-You must NEVER generate dangerous commands like delete, patch, edit, unless the user specifically asks for it.
+You are a Kubernetes expert assistant.
 
-Reply ONLY with the CLI command (no markdown, no explanation).
+Given a user's request, generate a safe kubectl command.
+Strict rules:
+- Only use 'kubectl get', 'kubectl describe', 'kubectl logs', 'kubectl explain', 'kubectl port-forward', or 'kubectl exec'.
+- For port-forwarding, always use **pod/<pod-name>**, not deployment.
+- Always include -n <namespace> if user mentions namespace.
+- Never generate delete, patch, or edit commands.
+- Reply only with the kubectl command, nothing else.
 
-User Request:
+User request:
 "${nlQuery}"
 `;
 
   let kubectlCommand: string;
 
   try {
-    kubectlCommand = await agentRunner.runAgentPrompt(prompt, "llama3-8b-8192");  // Best for Groq
+    kubectlCommand = await agentRunner.runAgentPrompt(prompt, "llama-3.1-8b-instant");  // or gpt-4
     kubectlCommand = kubectlCommand.trim();
+    console.log("Generated kubectl command:", kubectlCommand);
   } catch (error: any) {
-    console.error("❌ Error talking to Groq:", error.message);
-    return { error: "Failed to connect to AI agent." };
+    console.error("Error talking to Groq:", error.message);
+    return { error: "❌ Failed to connect to AI agent." };
   }
 
+  // Step 2: Execute generated command
   try {
-    const output = execSync(kubectlCommand).toString();
+    const output = execSync(kubectlCommand, { encoding: "utf-8" });
     return {
       kubectl_command: kubectlCommand,
-      output
+      output,
     };
   } catch (error: any) {
+    console.error("Command execution failed:", error.message);
     return {
       kubectl_command: kubectlCommand,
-      error: error.message
+      error: error.message || "❌ Failed to execute command.",
     };
   }
 };
