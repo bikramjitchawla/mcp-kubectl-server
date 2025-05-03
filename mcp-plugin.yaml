@@ -1,0 +1,38 @@
+openapi: 3.0.1
+info:
+  title: MCP Kubernetes Assistant
+  version: 1.0.0
+paths:
+  /api/mcp:
+    post:
+      summary: Call an MCP tool
+      operationId: callMCPTool
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MCPRequest'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPResponse'
+components:
+  schemas:
+    MCPRequest:
+      type: object
+      required: [id, method, params]
+      properties:
+        id:
+          type: string
+        method:
+          type: string
+        params:
+          type: object
+    MCPResponse:
+      type: object
+      description: Response from MCP tool
+      additionalProperties: true

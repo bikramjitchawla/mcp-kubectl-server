@@ -6,6 +6,8 @@ import { explainKubeResultTool } from "./explainKubeResultTool";
 import { naturalLanguageKubectlTool } from "./naturalLanguageKubectlTool";
 import { logsFetcherTool } from "./logsFetcherTool";
 import { monitoringTool } from "./monitoringtool";
+import { helmInfoTool } from "./helmtool";
+import { k8sUtilityTool } from "./k8utilitytool";
 
 export const allTools = [
   {
@@ -93,5 +95,53 @@ export const allTools = [
       },
     },
     handler: monitoringTool,
+  },
+  {
+    name: "k8sUtilityTool",
+    description: "Execute advanced Kubernetes operations (exec, rollback, configmaps, etc.)",
+    parameters: {
+      operation: {
+        type: "string",
+        description: "The operation type (execInContainer, getOrManageConfigMapOrSecret, rollbackDeployment, manageIngressOrNetworkPolicy, switchContext)",
+        required: true,
+      },
+      namespace: {
+        type: "string",
+        description: "Namespace of the resource",
+        required: false,
+      },
+      resourceName: {
+        type: "string",
+        description: "Name of the pod, deployment, configmap, etc.",
+        required: false,
+      },
+      resourceType: {
+        type: "string",
+        description: "Type of resource (configmap, secret, ingress, networkpolicy, etc.)",
+        required: false,
+      },
+      command: {
+        type: "string",
+        description: "Command to run inside a container (for exec)",
+        required: false,
+      },
+      context: {
+        type: "string",
+        description: "Kubernetes context name (for switching context)",
+        required: false,
+      },
+      revision: {
+        type: "string",
+        description: "Specific revision to roll back to (optional)",
+        required: false,
+      },
+    },
+    handler: k8sUtilityTool,
+  },
+  {
+    name: "helmInfoTool",
+    description: "Show helm version, repos, and all releases",
+    parameters: {},
+    handler: helmInfoTool,
   },
 ];
