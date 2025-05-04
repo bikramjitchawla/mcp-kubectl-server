@@ -1,6 +1,5 @@
 import { portForwardTool } from "./portForwardTool";
 import { execCommandTool } from "./execCommandTool";
-import { kubectlExplainTool } from "./kubectlExplainTool";
 import { getPodEventsTool } from "./getPodEventsTool";
 import { explainKubeResultTool } from "./explainKubeResultTool";
 import { naturalLanguageKubectlTool } from "./naturalLanguageKubectlTool";
@@ -46,25 +45,17 @@ export const allTools = [
     handler: execCommandTool,
   },  
   {
-    name: "kubectlExplain",
-    description: "Explain a Kubernetes resource",
-    parameters: {
-      resource: { type: "string", description: "Resource to explain, e.g., pod.spec", required: true },
-    },
-    handler: kubectlExplainTool,
-  },
-  {
     name: "getPodEventsTool",
-    description: "Get Kubernetes events related to a specific pod.",
+    description: "Fetch Kubernetes events related to a specific pod.",
     parameters: {
       podName: {
         type: "string",
-        description: "The name of the pod.",
+        description: "Pod name to fetch events for",
         required: true,
       },
       namespace: {
         type: "string",
-        description: "The namespace of the pod (default is 'default').",
+        description: "Namespace of the pod (defaults to 'default')",
         required: false,
       },
     },

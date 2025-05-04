@@ -1,4 +1,4 @@
-import { runKubectlCommand } from "@/utils/kubectlUtils";
+import { execSync } from "child_process";
 
 export const getPodEventsTool = async (
   input: Record<string, any>
@@ -12,7 +12,7 @@ export const getPodEventsTool = async (
   const command = `kubectl get events -n ${namespace} --field-selector involvedObject.name=${podName}`;
 
   try {
-    const output = await runKubectlCommand(command);
+    const output = execSync(command, { encoding: "utf-8" }).trim();
 
     if (!output || output.toLowerCase().includes("no resources found")) {
       return {
