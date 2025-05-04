@@ -5,10 +5,10 @@ import { explainKubeResultTool } from "./explainKubeResultTool";
 import { naturalLanguageKubectlTool } from "./naturalLanguageKubectlTool";
 import { logsFetcherTool } from "./logsFetcherTool";
 import { monitoringTool } from "./monitoringtool";
-import { helmInfoTool } from "./helmtool";
 import { rolloutCheckerTool } from "./rolloutCheckerTool";
 import { namespaceAnalyzerTool } from "./namespaceAnalyzerTool";
 import { scaleDeploymentTool } from "./scaleDeploymentTool";
+import { helmTool } from "./helmtool";
 
 export const allTools = [
   {
@@ -125,10 +125,41 @@ export const allTools = [
     handler: monitoringTool,
   },
   {
-    name: "helmInfoTool",
-    description: "Show Helm version, repositories, and deployed releases across all namespaces.",
-    parameters: {},
-    handler: helmInfoTool,
+    name: "helmTool",
+    description: "Install, upgrade, or uninstall a Helm release.",
+    parameters: {
+      operation: {
+        type: "string",
+        description: "One of: install, upgrade, uninstall",
+        required: true,
+      },
+      name: {
+        type: "string",
+        description: "Helm release name",
+        required: true,
+      },
+      chart: {
+        type: "string",
+        description: "Chart name (e.g. bitnami/nginx)",
+        required: false,
+      },
+      repo: {
+        type: "string",
+        description: "Optional chart repo URL",
+        required: false,
+      },
+      namespace: {
+        type: "string",
+        description: "Namespace for release",
+        required: true,
+      },
+      values: {
+        type: "object",
+        description: "Optional Helm values as an object",
+        required: false,
+      },
+    },
+    handler: helmTool,
   },
   {
     name: "rolloutCheckerTool",
