@@ -23,19 +23,19 @@ export const explainKubeResultTool = async (
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "llama3-8b-8192", // ✅ Correct Groq model
+          model: "llama3-8b-8192", // Correct Groq model
           messages: [{ role: "user", content: prompt }],
           temperature: 0.2,
         }),
       });
   
       const json = await res.json();
-      console.log("🔍 Groq raw response:", JSON.stringify(json, null, 2)); // ✅ Add debug log
+      console.log("Groq raw response:", JSON.stringify(json, null, 2)); // Add debug log
   
       if (!json?.choices || !Array.isArray(json.choices) || !json.choices.length) {
-        console.error("❌ AI response missing choices:", json);
+        console.error("AI response missing choices:", json);
         return {
-          content: [{ type: "text", text: "❌ AI response malformed or empty." }],
+          content: [{ type: "text", text: "AI response malformed or empty." }],
         };
       }
   
@@ -45,9 +45,9 @@ export const explainKubeResultTool = async (
         content: [{ type: "text", text: explanation }],
       };
     } catch (err: any) {
-      console.error("❌ Groq API fetch error:", err);
+      console.error("Groq API fetch error:", err);
       return {
-        content: [{ type: "text", text: "❌ Failed to fetch explanation from Groq API." }],
+        content: [{ type: "text", text: "Failed to fetch explanation from Groq API." }],
       };
     }
   };

@@ -1,17 +1,35 @@
 import { runKubectlCommand } from "@/utils/kubectlUtils";
 
-export const getPodEventsTool = async (input: Record<string, any>) => {
+export const getPodEventsTool = async (
+  input: Record<string, any>
+): Promise<Record<string, any>> => {
   const { podName, namespace = "default" } = input;
 
   if (!podName) {
-    throw new Error("Missing required parameter: podName");
+    return { error: "Missing required parameter: podName" };
   }
 
-  const result = await runKubectlCommand(
-    `kubectl get events -n ${namespace} --field-selector involvedObject.name=${podName}`
-  );
+  const command = `kubectl get events -n ${namespace} --field-selector involvedObject.name=${podName}`;
 
-  return {
-    content: [{ type: "text", text: result }],
-  };
+  try {
+    const output = await runKubectlCommand(command);
+
+    if (!output || output.toLowerCase().includes("no resources found")) {
+      return {
+        command,
+        output: "",
+        error: `No events found for pod '${podName}' in namespace '${namespace}'.`,
+      };
+    }
+
+    return {
+      command,
+      output,
+    };
+  } catch (err: any) {
+    return {
+      command,
+      error: `Failed to get pod events: ${err.message}`,
+    };
+  }
 };

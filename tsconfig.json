@@ -18,14 +18,14 @@
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
-    // ✅ Alias setup starts here
+    // Alias setup starts here
     "baseUrl": ".",
     "paths": {
       "@/*": [
         "./*"
       ]
     }
-    // ✅ Alias setup ends here
+    // Alias setup ends here
     ,
     "plugins": [
       {

@@ -1,11 +1,9 @@
-// tools/monitoringTool.ts
-
 import { execSync } from "child_process";
 
 export const monitoringTool = async (
   input: Record<string, any>
 ): Promise<Record<string, any>> => {
-  const { type, namespace, podName, container, tail, previous } = input;
+  const { type, namespace = "default", podName, container, tail, previous } = input;
 
   switch (type) {
     case "cluster-health":
@@ -27,9 +25,7 @@ export const monitoringTool = async (
     case "pod-health":
       if (!podName) return error("Missing podName for pod-health check");
       return runCommand(
-        namespace
-          ? `kubectl describe pod ${podName} -n ${namespace}`
-          : `kubectl describe pod ${podName}`
+        namespace ? `kubectl describe pod ${podName} -n ${namespace}` : `kubectl describe pod ${podName}`
       );
 
     case "pod-logs":
@@ -43,16 +39,28 @@ export const monitoringTool = async (
 
 function runCommand(cmd: string): Record<string, any> {
   try {
-    const output = execSync(cmd, { encoding: "utf-8" });
+    const output = execSync(cmd, { encoding: "utf-8" }).trim();
+
+    if (!output || output.toLowerCase().includes("no resources found")) {
+      return {
+        kubectl_command: cmd,
+        output: "",
+        error: `No resources found or nothing to display for: ${cmd}`,
+      };
+    }
+
     return { kubectl_command: cmd, output };
   } catch (err: any) {
-    return { kubectl_command: cmd, error: err.message };
+    return {
+      kubectl_command: cmd,
+      error: `Command failed: ${err.message}`,
+    };
   }
 }
 
 function getPodLogs({
   podName,
-  namespace,
+  namespace = "default",
   container,
   tail,
   previous,
@@ -63,22 +71,36 @@ function getPodLogs({
   tail?: number;
   previous?: boolean;
 }): Record<string, any> {
-  const args = ["kubectl", "logs"];
-  if (namespace) args.push("-n", namespace);
-  if (container) args.push("-c", container);
-  if (tail) args.push("--tail", String(tail));
+  const args = ["kubectl", "logs", "-n", namespace];
+
   if (previous) args.push("-p");
+  if (tail) args.push("--tail", String(tail));
+  if (container) args.push("-c", container);
+
   args.push(podName);
 
   const cmd = args.join(" ");
+
   try {
-    const output = execSync(cmd, { encoding: "utf-8" });
+    const output = execSync(cmd, { encoding: "utf-8" }).trim();
+
+    if (!output || output.toLowerCase().includes("no resources found")) {
+      return {
+        kubectl_command: cmd,
+        output: "",
+        error: `No logs found for pod '${podName}' in namespace '${namespace}'.`,
+      };
+    }
+
     return { kubectl_command: cmd, output };
   } catch (err: any) {
-    return { kubectl_command: cmd, error: err.message };
+    return {
+      kubectl_command: cmd,
+      error: `Failed to fetch logs: ${err.message}`,
+    };
   }
 }
 
 function error(msg: string): Record<string, any> {
-  return { error: `❌ ${msg}` };
+  return { error: `${msg}` };
 }

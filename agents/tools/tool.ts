@@ -7,7 +7,9 @@ import { naturalLanguageKubectlTool } from "./naturalLanguageKubectlTool";
 import { logsFetcherTool } from "./logsFetcherTool";
 import { monitoringTool } from "./monitoringtool";
 import { helmInfoTool } from "./helmtool";
-import { k8sUtilityTool } from "./k8utilitytool";
+import { rolloutCheckerTool } from "./rolloutCheckerTool";
+import { namespaceAnalyzerTool } from "./namespaceAnalyzerTool";
+import { scaleDeploymentTool } from "./scaleDeploymentTool";
 
 export const allTools = [
   {
@@ -22,15 +24,27 @@ export const allTools = [
     handler: portForwardTool,
   },
   {
-    name: "execCommandInPod",
-    description: "Execute command inside a running pod",
+    name: "execCommandTool",
+    description: "Execute a shell command inside a running Kubernetes pod.",
     parameters: {
-      podName: { type: "string", description: "Pod name", required: true },
-      command: { type: "string", description: "Command to execute inside pod", required: true },
-      namespace: { type: "string", description: "Namespace", required: false },
+      podName: {
+        type: "string",
+        description: "The name of the pod.",
+        required: true,
+      },
+      command: {
+        type: "string",
+        description: "The shell command to run inside the pod.",
+        required: true,
+      },
+      namespace: {
+        type: "string",
+        description: "The namespace of the pod (optional, defaults to 'default').",
+        required: false,
+      },
     },
     handler: execCommandTool,
-  },
+  },  
   {
     name: "kubectlExplain",
     description: "Explain a Kubernetes resource",
@@ -40,11 +54,19 @@ export const allTools = [
     handler: kubectlExplainTool,
   },
   {
-    name: "getPodEvents",
-    description: "Get Kubernetes events for a pod",
+    name: "getPodEventsTool",
+    description: "Get Kubernetes events related to a specific pod.",
     parameters: {
-      podName: { type: "string", description: "Pod name", required: true },
-      namespace: { type: "string", description: "Namespace (optional)", required: false },
+      podName: {
+        type: "string",
+        description: "The name of the pod.",
+        required: true,
+      },
+      namespace: {
+        type: "string",
+        description: "The namespace of the pod (default is 'default').",
+        required: false,
+      },
     },
     handler: getPodEventsTool,
   },
@@ -80,7 +102,7 @@ export const allTools = [
     parameters: {
       type: {
         type: "string",
-        description: "Monitoring type: cluster-health | resource-usage | node-capacity | events | pod-health",
+        description: "Monitoring type: cluster-health | resource-usage | node-capacity | events | pod-health | pod-logs",
         required: true,
       },
       namespace: {
@@ -90,58 +112,76 @@ export const allTools = [
       },
       podName: {
         type: "string",
-        description: "Pod name for health checks (required for pod-health)",
+        description: "Pod name (required for pod-health and pod-logs)",
+        required: false,
+      },
+      container: {
+        type: "string",
+        description: "Container name inside the pod (optional for pod-logs)",
+        required: false,
+      },
+      tail: {
+        type: "number",
+        description: "Number of log lines to show (optional)",
+        required: false,
+      },
+      previous: {
+        type: "boolean",
+        description: "Get logs from previous container instance (optional)",
         required: false,
       },
     },
     handler: monitoringTool,
   },
   {
-    name: "k8sUtilityTool",
-    description: "Execute advanced Kubernetes operations (exec, rollback, configmaps, etc.)",
+    name: "helmInfoTool",
+    description: "Show Helm version, repositories, and deployed releases across all namespaces.",
+    parameters: {},
+    handler: helmInfoTool,
+  },
+  {
+    name: "rolloutCheckerTool",
+    description: "Check rollout status of a Kubernetes deployment.",
     parameters: {
-      operation: {
+      deployment: {
         type: "string",
-        description: "The operation type (execInContainer, getOrManageConfigMapOrSecret, rollbackDeployment, manageIngressOrNetworkPolicy, switchContext)",
+        description: "Deployment name",
         required: true,
       },
       namespace: {
         type: "string",
-        description: "Namespace of the resource",
-        required: false,
-      },
-      resourceName: {
-        type: "string",
-        description: "Name of the pod, deployment, configmap, etc.",
-        required: false,
-      },
-      resourceType: {
-        type: "string",
-        description: "Type of resource (configmap, secret, ingress, networkpolicy, etc.)",
-        required: false,
-      },
-      command: {
-        type: "string",
-        description: "Command to run inside a container (for exec)",
-        required: false,
-      },
-      context: {
-        type: "string",
-        description: "Kubernetes context name (for switching context)",
-        required: false,
-      },
-      revision: {
-        type: "string",
-        description: "Specific revision to roll back to (optional)",
+        description: "Namespace of the deployment (optional)",
         required: false,
       },
     },
-    handler: k8sUtilityTool,
+    handler: rolloutCheckerTool,
   },
   {
-    name: "helmInfoTool",
-    description: "Show helm version, repos, and all releases",
+    name: "namespaceAnalyzerTool",
+    description: "List and count all namespaces in the Kubernetes cluster.",
     parameters: {},
-    handler: helmInfoTool,
+    handler: namespaceAnalyzerTool,
   },
+  {
+    name: "scaleDeploymentTool",
+    description: "Scale a Kubernetes deployment to a specific number of replicas.",
+    parameters: {
+      deployment: {
+        type: "string",
+        description: "Deployment name",
+        required: true,
+      },
+      replicas: {
+        type: "number",
+        description: "Number of replicas to scale to",
+        required: true,
+      },
+      namespace: {
+        type: "string",
+        description: "Namespace of the deployment (optional)",
+        required: false,
+      },
+    },
+    handler: scaleDeploymentTool,
+  }
 ];

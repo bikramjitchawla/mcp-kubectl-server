@@ -21,200 +21,124 @@ import { useState } from 'react';
 
 function parseOutput(output: string): string[][] {
   if (!output || typeof output !== 'string') return [];
-
   const lines = output.trim().split('\n');
   return lines.map((line) =>
-    line
-      .trim()
-      .split(/\s{2,}/) // split by 2+ spaces
-      .filter(Boolean)
+    line.trim().split(/\s{2,}|\t+/).filter(Boolean)
   );
 }
 
-// ✨ Function to bold Kubernetes keywords
-function formatAIText(text: string) {
-  if (!text) return '';
-
-  const keywords = ['Pod', 'Deployment', 'Namespace', 'Service', 'Node', 'PersistentVolume', 'PersistentVolumeClaim', 'Ingress', 'ReplicaSet'];
-
-  let formatted = text;
-  for (const word of keywords) {
-    const regex = new RegExp(`\\b(${word})\\b`, 'g');
-    formatted = formatted.replace(regex, '**$1**');
-  }
-  return formatted;
-}
-
 export default function MCPResult({ result }: { result: any }) {
-  const [aiResponse, setAiResponse] = useState<string | null>(null);
+  const [aiExplanation, setAiExplanation] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [toastOpen, setToastOpen] = useState(false);
 
-  if (!result) {
-    return (
-      <Box sx={{ mt: 4 }}>
-        <Typography variant="body1">No result yet.</Typography>
-      </Box>
-    );
-  }
+  const res = result?.result?.result || result?.result || {};
+  const command = res.command || res.kubectl_command;
+  const output = res.output || '';
+  const error = res.error || '';
+  const table = parseOutput(output);
 
-  const res = result?.result;
-  const command = res?.kubectl_command || result?.kubectl_command;
-  const output = res?.output || result?.output;
-
-  const tableData = parseOutput(output);
-  const headers = tableData[0] || [];
-  const rows = tableData.slice(1);
-
-  async function handleExplain() {
+  const handleExplain = async () => {
     if (!command || !output) return;
 
     setLoading(true);
+    setAiExplanation(null);
 
-    try {
-      const explainBody = {
-        id: 'uuid-' + Math.random().toString(36).substr(2, 9),
-        method: 'mcp.tool.call',
+    const response = await fetch("/api/mcp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "uuid-" + Math.random().toString(36).substring(2),
+        method: "mcp.tool.call",
         params: {
-          name: 'explain_kubectl_result',
-          input: {
-            kubectl_command: command,
-            output: output,
-          },
+          name: "explain_kubectl_result",
+          input: { kubectl_command: command, output },
         },
-      };
+      }),
+    });
 
-      const res = await fetch('/api/mcp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(explainBody),
-      });
+    const data = await response.json();
+    const text =
+      data?.result?.content?.[0]?.text ||
+      data?.result?.choices?.[0]?.message?.content ||
+      "No explanation returned.";
 
-      const data = await res.json();
-      console.log('📦 Full API response:', data);
+    setAiExplanation(text.trim());
+    setLoading(false);
+  };
 
-      const explanation =
-        data?.result?.choices?.[0]?.message?.content ||
-        data?.choices?.[0]?.message?.content ||
-        data?.result?.content?.[0]?.text ||
-        null;
-
-      console.log('💬 Extracted explanation:', explanation);
-
-      if (explanation) {
-        setAiResponse(explanation.trim());
-      } else {
-        setAiResponse('❌ No explanation returned.');
-      }
-    } catch (err) {
-      console.error('❌ Failed to fetch AI explanation:', err);
-      setAiResponse('❌ Failed to fetch AI explanation.');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function handleCopy() {
-    if (aiResponse) {
-      navigator.clipboard.writeText(aiResponse);
-      setToastOpen(true);
-    }
-  }
+  const handleCopy = () => {
+    navigator.clipboard.writeText(aiExplanation || '');
+    setToastOpen(true);
+  };
 
   return (
     <Box sx={{ mt: 4 }}>
       {command && (
         <>
           <Typography variant="h6" gutterBottom>
-            Command:
+            Command Executed:
           </Typography>
-          <Paper sx={{ p: 2, mb: 3, backgroundColor: '#f5f5f5' }}>
+          <Paper sx={{ p: 2, mb: 2, backgroundColor: '#f9f9f9' }}>
             <code>{command}</code>
           </Paper>
         </>
       )}
 
-      {rows.length > 0 ? (
-        <TableContainer component={Paper}>
+      {error ? (
+        <Paper sx={{ p: 2, mb: 2, backgroundColor: '#fff3cd', border: '1px solid #ffeeba' }}>
+          <Typography color="error" fontWeight="bold">Error:</Typography>
+          <pre style={{ whiteSpace: "pre-wrap" }}>{error}</pre>
+        </Paper>
+      ) : table.length > 1 ? (
+        <TableContainer component={Paper} sx={{ mb: 3 }}>
           <Table>
             <TableHead>
               <TableRow>
-                {headers.map((header, i) => (
-                  <TableCell key={i} sx={{ fontWeight: 'bold' }}>
-                    {header}
-                  </TableCell>
+                {table[0].map((header, i) => (
+                  <TableCell key={i} sx={{ fontWeight: 'bold' }}>{header}</TableCell>
                 ))}
               </TableRow>
             </TableHead>
             <TableBody>
-              {rows.map((row, rIdx) => (
-                <TableRow key={rIdx}>
-                  {row.map((cell, cIdx) => (
-                    <TableCell key={cIdx}>{cell}</TableCell>
+              {table.slice(1).map((row, i) => (
+                <TableRow key={i}>
+                  {row.map((cell, j) => (
+                    <TableCell key={j}>{cell}</TableCell>
                   ))}
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         </TableContainer>
-      ) : output ? (
-        <Paper sx={{ p: 2, backgroundColor: '#f5f5f5' }}>
-          <Typography variant="body2" fontWeight="bold">
-            Raw Output:
-          </Typography>
-          <pre style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}>
-            {output}
-          </pre>
-        </Paper>
       ) : (
-        <Paper sx={{ p: 2, backgroundColor: '#f5f5f5' }}>
-          <Typography>No output returned from the tool.</Typography>
-          <pre>{JSON.stringify(result, null, 2)}</pre>
-        </Paper>
+        output && (
+          <Paper sx={{ p: 2, mb: 2, backgroundColor: '#f4f4f4' }}>
+            <Typography fontWeight="bold">Raw Output:</Typography>
+            <pre>{output}</pre>
+          </Paper>
+        )
       )}
 
       {command && output && (
-        <Box sx={{ mt: 4 }}>
+        <Box sx={{ mt: 2 }}>
           <Button variant="contained" onClick={handleExplain} disabled={loading}>
-            {loading ? <CircularProgress size={20} /> : 'Explain with AI'}
+            {loading ? <CircularProgress size={20} /> : "💡 Explain with AI"}
           </Button>
         </Box>
       )}
 
-      {aiResponse && (
-        <Card
-          sx={{
-            mt: 4,
-            p: 3,
-            backgroundColor: '#f0f8ff',
-            boxShadow: 3,
-            maxHeight: 500,
-            overflowY: 'auto',
-          }}
-        >
+      {aiExplanation && (
+        <Card sx={{ mt: 4, backgroundColor: '#f0f8ff', boxShadow: 3 }}>
           <CardContent>
-            <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center' }}>
-              💡 <span style={{ marginLeft: '8px' }}>AI Insight</span>
+            <Typography variant="h6" gutterBottom>
+              💡 AI Explanation
             </Typography>
-
-            <Typography
-              variant="body2"
-              sx={{
-                whiteSpace: 'pre-wrap',
-                lineHeight: 1.7,
-                fontSize: '1rem',
-                color: '#333',
-                mt: 2,
-              }}
-              dangerouslySetInnerHTML={{ __html: formatAIText(aiResponse).replace(/\n/g, '<br/>') }}
-            />
-
-            <Box sx={{ mt: 2, textAlign: 'right' }}>
-              <Button
-                size="small"
-                variant="outlined"
-                onClick={handleCopy}
-              >
+            <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
+              {aiExplanation}
+            </Typography>
+            <Box sx={{ textAlign: 'right', mt: 2 }}>
+              <Button size="small" variant="outlined" onClick={handleCopy}>
                 📋 Copy
               </Button>
             </Box>

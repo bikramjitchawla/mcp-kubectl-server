@@ -1,10 +1,75 @@
 import { execSync } from "child_process";
 import { MCPAgentRunner } from "@/agents/MCPAgentRunner";
-import { monitoringTool } from "./monitoringtool";
-import { logsFetcherTool } from "./logsFetcherTool";
-import { explainKubeResultTool } from "./explainKubeResultTool";
+import { allTools } from "./tool";
 
 const agentRunner = new MCPAgentRunner();
+
+// Define matchers to route commands to tools
+const toolCommandMatchers: {
+  name: string;
+  match: (cmd: string) => boolean;
+  extractParams: (cmd: string) => Record<string, any> | null;
+}[] = [
+  {
+    name: "monitoringTool",
+    match: (cmd) => cmd.startsWith("kubectl logs "),
+    extractParams: (cmd) => {
+      const podMatch = cmd.match(/logs\s+([^\s]+)/);
+      const nsMatch = cmd.match(/-n\s+([^\s]+)/) || cmd.match(/--namespace\s+([^\s]+)/);
+      if (!podMatch) return null;
+
+      return {
+        type: "pod-logs",
+        podName: podMatch[1],
+        namespace: nsMatch?.[1] || "default",
+      };
+    },
+  },
+  {
+    name: "monitoringTool",
+    match: (cmd) => cmd.startsWith("kubectl describe pod "),
+    extractParams: (cmd) => {
+      const podMatch = cmd.match(/describe pod\s+([^\s]+)/);
+      const nsMatch = cmd.match(/-n\s+([^\s]+)/);
+      if (!podMatch) return null;
+
+      return {
+        type: "pod-health",
+        podName: podMatch[1],
+        namespace: nsMatch?.[1] || "default",
+      };
+    },
+  },
+  {
+    name: "monitoringTool",
+    match: (cmd) => cmd.startsWith("kubectl get events"),
+    extractParams: (cmd) => {
+      const nsMatch = cmd.match(/-n\s+([^\s]+)/) || cmd.match(/--namespace\s+([^\s]+)/);
+      return {
+        type: "events",
+        namespace: nsMatch?.[1] || "default",
+      };
+    },
+  },
+  {
+    name: "monitoringTool",
+    match: (cmd) => cmd.includes("top pod") || cmd.includes("top pods"),
+    extractParams: (cmd) => {
+      const nsMatch = cmd.match(/-n\s+([^\s]+)/);
+      return {
+        type: "resource-usage",
+        namespace: nsMatch?.[1] || undefined,
+      };
+    },
+  },
+  {
+    name: "monitoringTool",
+    match: (cmd) => cmd === "kubectl get componentstatuses",
+    extractParams: () => ({
+      type: "cluster-health",
+    }),
+  },
+];
 
 export const naturalLanguageKubectlTool = async (
   input: Record<string, any>
@@ -12,7 +77,6 @@ export const naturalLanguageKubectlTool = async (
   const nlQuery = input.query;
   if (!nlQuery) throw new Error("Missing 'query' input");
 
-  // Optional: Fetch pods to provide better context to the model
   let availablePods = "";
   try {
     availablePods = execSync("kubectl get pods -A -o name", {
@@ -25,83 +89,65 @@ export const naturalLanguageKubectlTool = async (
   const prompt = `
 You are a Kubernetes and Helm CLI assistant.
 
-Here are the pods running:
-${availablePods}
+Only generate SAFE one-line CLI commands based on user requests.
 
-From the user's request, generate a one-line, safe CLI command using:
-- kubectl get/describe/logs/explain/exec/port-forward
+Allowed:
+- helm version --short
+- helm repo list
+- helm repo update
+- helm list [--all-namespaces]
 - helm install/upgrade/uninstall/list
 
-Rules:
-- Use full pod names (e.g. pod/xyz-123-abc) for exec/port-forward
-- Use /bin/sh (not bash)
-- Include '-n <namespace>' if mentioned
-- Never use delete, patch, edit
-- DO NOT include markdown, backticks, or explanations
+DO NOT use: delete, patch, apply, edit, or any unknown flags.
+NEVER use -a, --app-version, or unsupported flags.
 
-Just return one CLI command.
+Return ONE line only, without explanation.
 
-User:
+User request:
 "${nlQuery}"
 `;
 
   let rawCommand = "";
+
   try {
     const aiResponse = await agentRunner.runAgentPrompt(prompt, "llama-3.1-8b-instant");
     rawCommand = aiResponse.trim().split("\n")[0];
     console.log("Generated command:", rawCommand);
-  } catch (err: any) {
-    return { error: "❌ NLP error: " + err.message };
-  }
 
-  // Check if it maps to a known tool
-  const lower = nlQuery.toLowerCase();
+    // Block dangerous commands
+    if (!rawCommand.startsWith("kubectl") && !rawCommand.startsWith("helm")) {
+      return {
+        command: rawCommand,
+        error: "Unsupported command. Execution blocked.",
+      };
+    }
 
-  if (lower.includes("check cluster health")) {
-    return await monitoringTool({ type: "cluster-health" });
-  }
+    // Check for matching tools
+    for (const matcher of toolCommandMatchers) {
+      if (matcher.match(rawCommand)) {
+        const tool = allTools.find((t) => t.name === matcher.name);
+        const params = matcher.extractParams(rawCommand);
+        if (tool && params) {
+          try {
+            const result = await tool.handler(params);
+            return { command: rawCommand, ...result };
+          } catch (err: any) {
+            return {
+              command: rawCommand,
+              error: err.message || "Tool execution failed.",
+            };
+          }
+        }
+      }
+    }
 
-  if (lower.includes("resource usage") || lower.includes("cpu") || lower.includes("memory usage")) {
-    const nsMatch = nlQuery.match(/namespace\s+([a-z0-9-]+)/i);
-    return await monitoringTool({
-      type: "resource-usage",
-      namespace: nsMatch?.[1],
-    });
-  }
-
-  if (lower.includes("validate resources")) {
-    const nsMatch = nlQuery.match(/namespace\s+([a-z0-9-]+)/i);
-    return await monitoringTool({
-      type: "validate-resources",
-      namespace: nsMatch?.[1] || "default",
-    });
-  }
-
-  if (lower.includes("logs from") || lower.includes("fetch logs")) {
-    const podMatch = nlQuery.match(/logs (?:from|of)?\s*([a-zA-Z0-9-]+)/i);
-    const nsMatch = nlQuery.match(/namespace\s+([a-z0-9-]+)/i);
-    return await logsFetcherTool({
-      podName: podMatch?.[1],
-      namespace: nsMatch?.[1] || "default",
-    });
-  }
-
-  // Final fallback: execute AI-generated raw command
-  if (!rawCommand.startsWith("kubectl") && !rawCommand.startsWith("helm")) {
-    return {
-      command: rawCommand,
-      error: "❌ Unsupported or unsafe command generated. Execution blocked.",
-    };
-  }
-
-  try {
-    const output = execSync(rawCommand, { encoding: "utf-8" });
+    // Fallback: safe command execution
+    const output = execSync(rawCommand, { encoding: "utf-8" }).trim();
     return { command: rawCommand, output };
   } catch (error: any) {
-    // Optional: use explanation tool if command failed
-    return await explainKubeResultTool({
-      kubectl_command: rawCommand,
-      output: error.message || "Unknown error",
-    });
+    return {
+      command: rawCommand,
+      error: error.message || "Command execution failed.",
+    };
   }
 };
