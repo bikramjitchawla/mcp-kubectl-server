@@ -1,69 +1,83 @@
 import { spawn } from "child_process";
 
+export interface PortForwardResult {
+  kubectl_command: string;
+  output?: string;
+  pid?: number;
+  error?: string;
+}
+
 export const portForwardTool = async (
-  input: Record<string, any>
-): Promise<Record<string, any>> => {
+  input: {
+    podName?: string;
+    localPort?: number;
+    remotePort?: number;
+    namespace?: string;
+  }
+): Promise<PortForwardResult> => {
   const { podName, localPort, remotePort, namespace = "default" } = input;
 
-  if (!podName || !localPort || !remotePort) {
-    return { error: "podName, localPort, and remotePort are required." };
+  if (!podName || localPort == null || remotePort == null) {
+    return {
+      kubectl_command: "",
+      error: "podName, localPort, and remotePort are required.",
+    };
   }
 
   const cmd = "kubectl";
   const args = [
     "port-forward",
-    `pod/${podName}`,
-    `${localPort}:${remotePort}`,
     "-n",
     namespace,
+    `pod/${podName}`,
+    `${localPort}:${remotePort}`,
   ];
+  const kubectl_command = `${cmd} ${args.join(" ")}`;
 
-  const process = spawn(cmd, args);
+  const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
 
-  let output = "";
-  let errorOutput = "";
+  let stdout = "";
+  let stderr = "";
 
-  return new Promise((resolve, reject) => {
+  return new Promise<PortForwardResult>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      if (!output.includes("Forwarding from")) {
-        process.kill();
-        return reject({
-          kubectl_command: `${cmd} ${args.join(" ")}`,
-          error: "⏱️ Port-forward timed out.",
-        });
-      }
+      proc.kill();
+      reject({
+        kubectl_command,
+        error: "⏱️ Port-forward timed out.",
+      });
     }, 5000);
 
-    process.stdout.on("data", (data) => {
-      output += data.toString();
-      if (output.includes("Forwarding from")) {
+    proc.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.includes("Forwarding from")) {
         clearTimeout(timeout);
-        return resolve({
-          kubectl_command: `${cmd} ${args.join(" ")}`,
+        resolve({
+          kubectl_command,
           output: "Port-forwarding started successfully.",
-          pid: process.pid,
+          pid: proc.pid,
         });
       }
     });
 
-    process.stderr.on("data", (data) => {
-      errorOutput += data.toString();
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
     });
 
-    process.on("error", (err) => {
+    proc.on("error", (err) => {
       clearTimeout(timeout);
-      return reject({
-        kubectl_command: `${cmd} ${args.join(" ")}`,
+      reject({
+        kubectl_command,
         error: `Failed to start port-forward: ${err.message}`,
       });
     });
 
-    process.on("close", () => {
+    proc.on("close", (code, signal) => {
       clearTimeout(timeout);
-      if (!output.includes("Forwarding from")) {
-        return reject({
-          kubectl_command: `${cmd} ${args.join(" ")}`,
-          error: errorOutput || "Port-forward failed to start.",
+      if (!stdout.includes("Forwarding from")) {
+        reject({
+          kubectl_command,
+          error: stderr || "Port-forward failed to start.",
         });
       }
     });

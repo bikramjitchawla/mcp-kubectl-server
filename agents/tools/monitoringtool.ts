@@ -1,106 +1,94 @@
 import { execSync } from "child_process";
 
-export const monitoringTool = async (
-  input: Record<string, any>
-): Promise<Record<string, any>> => {
-  const { type, namespace = "default", podName, container, tail, previous } = input;
+export interface MonitoringResult {
+  command: string;
+  output?: string;
+  error?: string;
+}
 
+export const monitoringTool = async (
+  input: {
+    type:
+      | "cluster-health"
+      | "resource-usage"
+      | "node-capacity"
+      | "events"
+      | "pod-health"
+      | "pod-logs";
+    namespace?: string;
+    podName?: string;
+    container?: string;
+    tail?: number;
+    previous?: boolean;
+  }
+): Promise<MonitoringResult> => {
+  console.log("➡️ monitoringTool input:", input);
+  const { type, namespace, podName, container, tail, previous } = input;
+
+  let cmd = "";
   switch (type) {
     case "cluster-health":
-      return runCommand("kubectl get componentstatuses");
+      cmd = "kubectl get componentstatuses";
+      break;
 
     case "resource-usage":
-      return runCommand(
-        namespace ? `kubectl top pod -n ${namespace}` : "kubectl top pods --all-namespaces"
-      );
+      cmd = namespace
+        ? `kubectl top pods -n ${namespace}`
+        : "kubectl top pods --all-namespaces";
+      break;
 
     case "node-capacity":
-      return runCommand("kubectl describe nodes");
+      cmd = "kubectl describe nodes";
+      break;
 
     case "events":
-      return runCommand(
-        namespace ? `kubectl get events -n ${namespace}` : "kubectl get events --all-namespaces"
-      );
+      cmd = namespace
+        ? `kubectl get events -n ${namespace}`
+        : "kubectl get events --all-namespaces";
+      break;
 
     case "pod-health":
-      if (!podName) return error("Missing podName for pod-health check");
-      return runCommand(
-        namespace ? `kubectl describe pod ${podName} -n ${namespace}` : `kubectl describe pod ${podName}`
-      );
+      if (!podName) {
+        console.error("pod-health missing podName");
+        return { command: "", error: "podName is required for pod-health." };
+      }
+      cmd = `kubectl describe pod ${podName}` +
+            (namespace ? ` -n ${namespace}` : "");
+      break;
 
     case "pod-logs":
-      if (!podName) return error("Missing podName for logs");
-      return getPodLogs({ podName, namespace, container, tail, previous });
+      if (!podName) {
+        console.error("pod-logs missing podName");
+        return { command: "", error: "podName is required for pod-logs." };
+      }
+      cmd = `kubectl logs ${podName}` +
+            (namespace ? ` -n ${namespace}` : "") +
+            (container ? ` -c ${container}` : "") +
+            (previous  ? " --previous"       : "") +
+            (tail != null ? ` --tail=${tail}` : "");
+      break;
 
     default:
-      return error(`Unsupported monitoring type: ${type}`);
+      console.error("Unsupported monitoring type:", type);
+      return {
+        command: "",
+        error: `Unsupported monitoring type: '${type}'.`,
+      };
+  }
+
+  console.log("🔧 running command:", cmd);
+  try {
+    const raw = execSync(cmd, { encoding: "utf-8" });
+    console.log("raw output:", raw.replace(/\n/g, "\\n"));
+    const output = raw.trim();
+    if (!output) {
+      console.warn("⚠️ empty output for:", cmd);
+      return { command: cmd, output: "", error: `No results for: ${cmd}` };
+    }
+    return { command: cmd, output };
+  } catch (err: any) {
+    console.error("execSync failed:", err);
+    const msg = err.message ?? String(err);
+    return { command: cmd, error: `Command failed: ${msg}` };
   }
 };
-
-function runCommand(cmd: string): Record<string, any> {
-  try {
-    const output = execSync(cmd, { encoding: "utf-8" }).trim();
-
-    if (!output || output.toLowerCase().includes("no resources found")) {
-      return {
-        kubectl_command: cmd,
-        output: "",
-        error: `No resources found or nothing to display for: ${cmd}`,
-      };
-    }
-
-    return { kubectl_command: cmd, output };
-  } catch (err: any) {
-    return {
-      kubectl_command: cmd,
-      error: `Command failed: ${err.message}`,
-    };
-  }
-}
-
-function getPodLogs({
-  podName,
-  namespace = "default",
-  container,
-  tail,
-  previous,
-}: {
-  podName: string;
-  namespace?: string;
-  container?: string;
-  tail?: number;
-  previous?: boolean;
-}): Record<string, any> {
-  const args = ["kubectl", "logs", "-n", namespace];
-
-  if (previous) args.push("-p");
-  if (tail) args.push("--tail", String(tail));
-  if (container) args.push("-c", container);
-
-  args.push(podName);
-
-  const cmd = args.join(" ");
-
-  try {
-    const output = execSync(cmd, { encoding: "utf-8" }).trim();
-
-    if (!output || output.toLowerCase().includes("no resources found")) {
-      return {
-        kubectl_command: cmd,
-        output: "",
-        error: `No logs found for pod '${podName}' in namespace '${namespace}'.`,
-      };
-    }
-
-    return { kubectl_command: cmd, output };
-  } catch (err: any) {
-    return {
-      kubectl_command: cmd,
-      error: `Failed to fetch logs: ${err.message}`,
-    };
-  }
-}
-
-function error(msg: string): Record<string, any> {
-  return { error: `${msg}` };
-}

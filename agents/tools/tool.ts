@@ -5,10 +5,11 @@ import { explainKubeResultTool } from "./explainKubeResultTool";
 import { naturalLanguageKubectlTool } from "./naturalLanguageKubectlTool";
 import { logsFetcherTool } from "./logsFetcherTool";
 import { monitoringTool } from "./monitoringtool";
-import { rolloutCheckerTool } from "./rolloutCheckerTool";
 import { namespaceAnalyzerTool } from "./namespaceAnalyzerTool";
 import { scaleDeploymentTool } from "./scaleDeploymentTool";
 import { helmTool } from "./helmtool";
+import { createPodTool } from "./createPodTool";
+import { listPodsTool } from "./listallpod";
 
 export const allTools = [
   {
@@ -43,10 +44,23 @@ export const allTools = [
       },
     },
     handler: execCommandTool,
+  },
+  {
+    name: "listPodsTool",
+    description:
+      "List pods across all namespaces, or within a specific namespace",
+    parameters: {
+      namespace: {
+        type: "string",
+        description: "Optional namespace to filter (omit for all namespaces)",
+        required: false,
+      },
+    },
+    handler: listPodsTool,
   },  
   {
     name: "getPodEventsTool",
-    description: "Fetch Kubernetes events related to a specific pod.",
+    description: "Fetch Kubernetes events for a specific pod",
     parameters: {
       podName: {
         type: "string",
@@ -89,16 +103,18 @@ export const allTools = [
   },
   {
     name: "monitoringTool",
-    description: "Perform monitoring operations like resource tracking, pod health, events, etc.",
+    description:
+      "Perform monitoring operations: cluster-health, resource-usage, node-capacity, events, pod-health, pod-logs",
     parameters: {
       type: {
         type: "string",
-        description: "Monitoring type: cluster-health | resource-usage | node-capacity | events | pod-health | pod-logs",
+        description:
+          "One of: cluster-health | resource-usage | node-capacity | events | pod-health | pod-logs",
         required: true,
       },
       namespace: {
         type: "string",
-        description: "Namespace for the resource (optional)",
+        description: "Optional namespace for the resource",
         required: false,
       },
       podName: {
@@ -113,12 +129,13 @@ export const allTools = [
       },
       tail: {
         type: "number",
-        description: "Number of log lines to show (optional)",
+        description: "Number of log lines to show (optional for pod-logs)",
         required: false,
       },
       previous: {
         type: "boolean",
-        description: "Get logs from previous container instance (optional)",
+        description:
+          "Whether to fetch previous container logs (optional for pod-logs)",
         required: false,
       },
     },
@@ -126,64 +143,61 @@ export const allTools = [
   },
   {
     name: "helmTool",
-    description: "Install, upgrade, or uninstall a Helm release.",
+    description: "Install, upgrade, or uninstall a Helm release",
     parameters: {
       operation: {
         type: "string",
-        description: "One of: install, upgrade, uninstall",
+        description: "install | upgrade | uninstall",
         required: true,
       },
       name: {
         type: "string",
-        description: "Helm release name",
+        description: "Release name",
         required: true,
       },
       chart: {
         type: "string",
-        description: "Chart name (e.g. bitnami/nginx)",
+        description: "Chart to deploy (required for install/upgrade)",
         required: false,
       },
       repo: {
         type: "string",
-        description: "Optional chart repo URL",
+        description: "Chart repo URL (optional)",
         required: false,
       },
       namespace: {
         type: "string",
-        description: "Namespace for release",
+        description: "Kubernetes namespace",
         required: true,
       },
       values: {
         type: "object",
-        description: "Optional Helm values as an object",
+        description: "Values overrides as JSON object",
         required: false,
       },
     },
     handler: helmTool,
   },
   {
-    name: "rolloutCheckerTool",
-    description: "Check rollout status of a Kubernetes deployment.",
+    name: "createPodTool",
+    description: "...",
     parameters: {
-      deployment: {
-        type: "string",
-        description: "Deployment name",
-        required: true,
-      },
-      namespace: {
-        type: "string",
-        description: "Namespace of the deployment (optional)",
-        required: false,
-      },
+      name:        { type: "string", required: true, description: "Pod name" },
+      namespace:   { type: "string", required: false, description: "Namespace" },
+      template:    { type: "string", required: false, description: "Container template: ubuntu|nginx|busybox|alpine|custom" },
+      customConfig:{ type: "object", required: false, description: "Full V1Container spec if template=custom" },
+      dryRun:      { type: "boolean", required: false, description: "Dry-run: emit YAML only" },
     },
-    handler: rolloutCheckerTool,
+    handler: createPodTool,
   },
   {
     name: "namespaceAnalyzerTool",
-    description: "List and count all namespaces in the Kubernetes cluster.",
+    description: "List all namespaces and report their count",
     parameters: {},
     handler: namespaceAnalyzerTool,
   },
+  
+  
   {
     name: "scaleDeploymentTool",
     description: "Scale a Kubernetes deployment to a specific number of replicas.",
@@ -205,5 +219,6 @@ export const allTools = [
       },
     },
     handler: scaleDeploymentTool,
-  }
+  },
+  
 ];

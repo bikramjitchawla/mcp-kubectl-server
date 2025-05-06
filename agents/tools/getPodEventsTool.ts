@@ -1,30 +1,39 @@
 import { execSync } from "child_process";
 
+export interface GetPodEventsResult {
+  command: string;
+  output?: string;
+  error?: string;
+}
+
 export const getPodEventsTool = async (
-  input: Record<string, any>
-): Promise<Record<string, any>> => {
+  input: { podName?: string; namespace?: string }
+): Promise<GetPodEventsResult> => {
   const { podName, namespace = "default" } = input;
 
   if (!podName) {
-    return { error: "Missing required parameter: podName" };
+    return {
+      command: "",
+      error: "Missing required parameter: podName",
+    };
   }
 
   const command = `kubectl get events -n ${namespace} --field-selector involvedObject.name=${podName}`;
 
   try {
-    const output = execSync(command, { encoding: "utf-8" }).trim();
+    const raw = execSync(command, { encoding: "utf-8", timeout: 30_000 }).trim();
 
-    if (!output || output.toLowerCase().includes("no resources found")) {
+    if (!raw || raw.toLowerCase().includes("no resources found")) {
       return {
         command,
         output: "",
-        error: `No events found for pod '${podName}' in namespace '${namespace}'.`,
+        error: `⚠️ No events found for pod '${podName}' in namespace '${namespace}'.`,
       };
     }
 
     return {
       command,
-      output,
+      output: raw,
     };
   } catch (err: any) {
     return {

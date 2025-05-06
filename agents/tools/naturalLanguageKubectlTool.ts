@@ -1,153 +1,143 @@
-import { execSync } from "child_process";
+import * as k8s from "@kubernetes/client-node";
 import { MCPAgentRunner } from "@/agents/MCPAgentRunner";
 import { allTools } from "./tool";
+import { createPodTool } from "./createPodTool";
 
 const agentRunner = new MCPAgentRunner();
+type Tool = typeof allTools[number];
 
-// Define matchers to route commands to tools
-const toolCommandMatchers: {
-  name: string;
-  match: (cmd: string) => boolean;
-  extractParams: (cmd: string) => Record<string, any> | null;
-}[] = [
-  {
-    name: "monitoringTool",
-    match: (cmd) => cmd.startsWith("kubectl logs "),
-    extractParams: (cmd) => {
-      const podMatch = cmd.match(/logs\s+([^\s]+)/);
-      const nsMatch = cmd.match(/-n\s+([^\s]+)/) || cmd.match(/--namespace\s+([^\s]+)/);
-      if (!podMatch) return null;
-
-      return {
-        type: "pod-logs",
-        podName: podMatch[1],
-        namespace: nsMatch?.[1] || "default",
-      };
-    },
-  },
-  {
-    name: "monitoringTool",
-    match: (cmd) => cmd.startsWith("kubectl describe pod "),
-    extractParams: (cmd) => {
-      const podMatch = cmd.match(/describe pod\s+([^\s]+)/);
-      const nsMatch = cmd.match(/-n\s+([^\s]+)/);
-      if (!podMatch) return null;
-
-      return {
-        type: "pod-health",
-        podName: podMatch[1],
-        namespace: nsMatch?.[1] || "default",
-      };
-    },
-  },
-  {
-    name: "monitoringTool",
-    match: (cmd) => cmd.startsWith("kubectl get events"),
-    extractParams: (cmd) => {
-      const nsMatch = cmd.match(/-n\s+([^\s]+)/) || cmd.match(/--namespace\s+([^\s]+)/);
-      return {
-        type: "events",
-        namespace: nsMatch?.[1] || "default",
-      };
-    },
-  },
-  {
-    name: "monitoringTool",
-    match: (cmd) => cmd.includes("top pod") || cmd.includes("top pods"),
-    extractParams: (cmd) => {
-      const nsMatch = cmd.match(/-n\s+([^\s]+)/);
-      return {
-        type: "resource-usage",
-        namespace: nsMatch?.[1] || undefined,
-      };
-    },
-  },
-  {
-    name: "monitoringTool",
-    match: (cmd) => cmd === "kubectl get componentstatuses",
-    extractParams: () => ({
-      type: "cluster-health",
-    }),
-  },
-];
+export interface NLPResult {
+  command?: string;
+  output?: string;
+  result?: any;
+  error?: string;
+}
 
 export const naturalLanguageKubectlTool = async (
-  input: Record<string, any>
-): Promise<Record<string, any>> => {
-  const nlQuery = input.query;
-  if (!nlQuery) throw new Error("Missing 'query' input");
+  input: { query?: string }
+): Promise<NLPResult> => {
+  const rawQuery = input.query?.trim() ?? "";
+  console.log("[MCP] Received query:", rawQuery);
+  if (!rawQuery) {
+    return { error: "Missing `query` parameter." };
+  }
+  const query = rawQuery.toLowerCase();
 
-  let availablePods = "";
-  try {
-    availablePods = execSync("kubectl get pods -A -o name", {
-      encoding: "utf-8",
-    });
-  } catch {
-    availablePods = "";
+  if (/^(create|run)\s+pod\b/i.test(rawQuery)) {
+    console.log("[MCP] Early createPod fallback");
+    const nameMatch = rawQuery.match(/pod\s+([\w-]+)/i);
+    const name = nameMatch?.[1];
+    if (!name) {
+      return { error: "Could not extract Pod name from query." };
+    }
+
+    const tplMatch = rawQuery.match(/\b(ubuntu|nginx|busybox|alpine|custom)\b/i);
+    const template = (tplMatch?.[1].toLowerCase() as any) || "nginx";
+
+    // tightened namespace extraction: ignore optional “the ”
+    const nsMatch = rawQuery.match(/in\s+(?:the\s+)?([\w-]+)(?:\s+namespace)?/i);
+    const namespace = nsMatch?.[1] ?? "default";
+
+    const dryRun = /\b(dry[- ]?run)\b/i.test(rawQuery);
+
+    return await createPodTool({ name, template, namespace, dryRun });
   }
 
+  const kc = new k8s.KubeConfig();
+  kc.loadFromDefault();
+  const coreApi = kc.makeApiClient(k8s.CoreV1Api);
+  let podNames: string[] = [];
+  try {
+    const response = await coreApi.listPodForAllNamespaces();
+    podNames = response.items.map((p) => p.metadata?.name!).filter(Boolean);
+  } catch {
+    /* ignore */
+  }
+
+  const toolsDescription = allTools
+    .map((t) => {
+      const paramsDesc = Object.entries(t.parameters)
+        .map(([n, s]) => `${n} (${s.type}${s.required ? ", required" : ""})`)
+        .join("; ");
+      return `• ${t.name}: ${paramsDesc}`;
+    })
+    .join("\n");
+
   const prompt = `
-You are a Kubernetes and Helm CLI assistant.
+You are a Kubernetes CLI expert.
+Available tools:
+${toolsDescription}
 
-Only generate SAFE one-line CLI commands based on user requests.
+Current pods: ${podNames.join(", ") || "none"}
 
-Allowed:
-- helm version --short
-- helm repo list
-- helm repo update
-- helm list [--all-namespaces]
-- helm install/upgrade/uninstall/list
+User wants to call exactly ONE tool.
+Respond with valid JSON only:
 
-DO NOT use: delete, patch, apply, edit, or any unknown flags.
-NEVER use -a, --app-version, or unsupported flags.
+{
+  "tool": "<one of the tool names above>",
+  "params": { /* tool-specific parameters */ }
+}
 
-Return ONE line only, without explanation.
+No extra text.
 
-User request:
-"${nlQuery}"
-`;
+User query: "${rawQuery}"
+`.trim();
 
-  let rawCommand = "";
+  console.log("[MCP] Sending prompt to AI");
+  let parsed: { tool: string; params: Record<string, any> };
+  try {
+    const aiRaw = await agentRunner.runAgentPrompt(
+      prompt,
+      "llama-3.1-8b-instant"
+    );
+    const match = aiRaw.match(/{[\s\S]*\}$/);
+    if (!match) throw new Error("No JSON found");
+    parsed = JSON.parse(match[0]);
+    console.log("[MCP] Parsed JSON:", parsed);
+  } catch (err: any) {
+    console.error("[MCP] JSON parse error:", err);
+    return { error: `Could not parse AI response: ${err.message}` };
+  }
+  if (/^(get|list)\s+(all\s+)?pods?(\s|$)/.test(query)) {
+    console.log("[MCP] Pods fallback");
+    parsed.tool = "listPodsTool";
+    parsed.params = {};
+    const m = rawQuery.match(/in\s+(?:the\s+)?([\w-]+)(?:\s+namespace)?/i);
+    if (m) parsed.params.namespace = m[1];
+  }
+
+  if (
+    /cluster\s*health/i.test(rawQuery) ||
+    /component\s*status(es)?/i.test(rawQuery)
+  ) {
+    parsed.tool = "monitoringTool";
+    parsed.params = { type: "cluster-health" };
+  }
+
+  if (
+    /node\s*(capacity|capacities|resources)?/i.test(rawQuery) ||
+    /cpu\s*and\s*memory\s*capacity/i.test(rawQuery)
+  ) {
+    parsed.tool = "monitoringTool";
+    parsed.params = { type: "node-capacity" };
+  }
+
+  if (/^(get|list)\s+(all\s+)?namespaces?(\s|$)/i.test(query)) {
+    console.log("[MCP] Namespaces fallback");
+    parsed.tool = "namespaceAnalyzerTool";
+    parsed.params = {};
+  }
+
+  const tool: Tool | undefined = allTools.find((t) => t.name === parsed.tool);
+  if (!tool) {
+    return { error: `Unknown tool "${parsed.tool}".` };
+  }
+  console.log(`[MCP] Invoking ${tool.name}`, parsed.params);
 
   try {
-    const aiResponse = await agentRunner.runAgentPrompt(prompt, "llama-3.1-8b-instant");
-    rawCommand = aiResponse.trim().split("\n")[0];
-    console.log("Generated command:", rawCommand);
-
-    // Block dangerous commands
-    if (!rawCommand.startsWith("kubectl") && !rawCommand.startsWith("helm")) {
-      return {
-        command: rawCommand,
-        error: "Unsupported command. Execution blocked.",
-      };
-    }
-
-    // Check for matching tools
-    for (const matcher of toolCommandMatchers) {
-      if (matcher.match(rawCommand)) {
-        const tool = allTools.find((t) => t.name === matcher.name);
-        const params = matcher.extractParams(rawCommand);
-        if (tool && params) {
-          try {
-            const result = await tool.handler(params);
-            return { command: rawCommand, ...result };
-          } catch (err: any) {
-            return {
-              command: rawCommand,
-              error: err.message || "Tool execution failed.",
-            };
-          }
-        }
-      }
-    }
-
-    // Fallback: safe command execution
-    const output = execSync(rawCommand, { encoding: "utf-8" }).trim();
-    return { command: rawCommand, output };
-  } catch (error: any) {
-    return {
-      command: rawCommand,
-      error: error.message || "Command execution failed.",
-    };
+    const result = await (tool.handler as any)(parsed.params);
+    return { ...result };
+  } catch (err: any) {
+    return { error: `Execution failed: ${err.message}` };
   }
 };
