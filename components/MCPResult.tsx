@@ -1,157 +1,147 @@
-import React, { useState } from 'react';
+'use client';
+
 import {
-  Box,
-  Card,
-  CardContent,
-  CardActions,
   Typography,
-  Button,
-  CircularProgress,
-  Alert,
+  Paper,
+  Box,
   Table,
   TableBody,
   TableCell,
   TableContainer,
   TableHead,
   TableRow,
+  Button,
+  CircularProgress,
+  Card,
+  CardContent,
   Snackbar,
+  Alert,
 } from '@mui/material';
-import SendIcon from '@mui/icons-material/Send';
-import ContentCopyIcon from '@mui/icons-material/ContentCopy';
-import TableChartIcon from '@mui/icons-material/TableChart';
+import { useState } from 'react';
 
 function parseOutput(output: string): string[][] {
-  if (!output) return [];
-  return output.trim().split('\n').map(line =>
+  if (!output || typeof output !== 'string') return [];
+  const lines = output.trim().split('\n');
+  return lines.map((line) =>
     line.trim().split(/\s{2,}|\t+/).filter(Boolean)
   );
 }
 
 export default function MCPResult({ result }: { result: any }) {
   const [aiExplanation, setAiExplanation] = useState<string | null>(null);
-  const [loadingExplain, setLoadingExplain] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [toastOpen, setToastOpen] = useState(false);
 
   const res = result?.result?.result || result?.result || {};
-  const command = res.command || res.kubectl_command || '';
+  const command = res.command || res.kubectl_command;
   const output = res.output || '';
   const error = res.error || '';
   const table = parseOutput(output);
 
   const handleExplain = async () => {
-    setLoadingExplain(true);
+    if (!command || !output) return;
+
+    setLoading(true);
     setAiExplanation(null);
-    try {
-      const payload = {
-        id: `uuid-${Math.random().toString(36).substring(2)}`,
-        method: 'mcp.tool.call',
+
+    const response = await fetch("/api/mcp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "uuid-" + Math.random().toString(36).substring(2),
+        method: "mcp.tool.call",
         params: {
-          name: 'explain_kubectl_result',
+          name: "explain_kubectl_result",
           input: { kubectl_command: command, output },
         },
-      };
-      const response = await fetch('/api/mcp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await response.json();
-      const text = data?.result?.content?.[0]?.text ||
-                   data?.result?.choices?.[0]?.message?.content ||
-                   'No explanation returned.';
-      setAiExplanation(text.trim());
-    } catch {
-      setAiExplanation('Failed to fetch AI explanation.');
-    } finally {
-      setLoadingExplain(false);
-    }
+      }),
+    });
+
+    const data = await response.json();
+    const text =
+      data?.result?.content?.[0]?.text ||
+      data?.result?.choices?.[0]?.message?.content ||
+      "No explanation returned.";
+
+    setAiExplanation(text.trim());
+    setLoading(false);
   };
 
   const handleCopy = () => {
-    if (aiExplanation) {
-      navigator.clipboard.writeText(aiExplanation);
-      setToastOpen(true);
-    }
+    navigator.clipboard.writeText(aiExplanation || '');
+    setToastOpen(true);
   };
 
   return (
-    <Box display="flex" justifyContent="center" mt={4} px={2}>
-      <Card sx={{ width: '100%', maxWidth: 700, boxShadow: 3, borderRadius: 2 }}>
-        <CardContent>
-          {command && (
-            <Box mb={2}>
-              <Typography variant="subtitle1" gutterBottom>
-                Command:
-              </Typography>
-              <Box component="pre" sx={{ backgroundColor: '#f5f5f5', p: 1, borderRadius: 1 }}>
-                {command}
-              </Box>
-            </Box>
-          )}
+    <Box sx={{ mt: 4 }}>
+      {command && (
+        <>
+          <Typography variant="h6" gutterBottom>
+            Command Executed:
+          </Typography>
+          <Paper sx={{ p: 2, mb: 2, backgroundColor: '#f9f9f9' }}>
+            <code>{command}</code>
+          </Paper>
+        </>
+      )}
 
-          {error ? (
-            <Alert severity="error" sx={{ mb: 2 }}>
-              {error}
-            </Alert>
-          ) : table.length > 1 ? (
-            <TableContainer sx={{ mb: 2 }}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    {table[0].map((h, i) => (
-                      <TableCell key={i} sx={{ fontWeight: 'bold' }}>
-                        {h}
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {table.slice(1).map((row, i) => (
-                    <TableRow key={i}>
-                      {row.map((cell, j) => (
-                        <TableCell key={j}>{cell}</TableCell>
-                      ))}
-                    </TableRow>
+      {error ? (
+        <Paper sx={{ p: 2, mb: 2, backgroundColor: '#fff3cd', border: '1px solid #ffeeba' }}>
+          <Typography color="error" fontWeight="bold">Error:</Typography>
+          <pre style={{ whiteSpace: "pre-wrap" }}>{error}</pre>
+        </Paper>
+      ) : table.length > 1 ? (
+        <TableContainer component={Paper} sx={{ mb: 3 }}>
+          <Table>
+            <TableHead>
+              <TableRow>
+                {table[0].map((header, i) => (
+                  <TableCell key={i} sx={{ fontWeight: 'bold' }}>{header}</TableCell>
+                ))}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {table.slice(1).map((row, i) => (
+                <TableRow key={i}>
+                  {row.map((cell, j) => (
+                    <TableCell key={j}>{cell}</TableCell>
                   ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          ) : output ? (
-            <Box component="pre" sx={{ backgroundColor: '#f5f5f5', p: 1, borderRadius: 1, mb: 2 }}>
-              {output}
-            </Box>
-          ) : (
-            <Typography>No output returned.</Typography>
-          )}
-        </CardContent>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      ) : (
+        output && (
+          <Paper sx={{ p: 2, mb: 2, backgroundColor: '#f4f4f4' }}>
+            <Typography fontWeight="bold">Raw Output:</Typography>
+            <pre>{output}</pre>
+          </Paper>
+        )
+      )}
 
-        <CardActions sx={{ justifyContent: 'flex-end', px: 2, pb: 2 }}>
-          {command && output && (
-            <Button
-              startIcon={<TableChartIcon />}
-              onClick={handleExplain}
-              disabled={loadingExplain}
-            >
-              {loadingExplain ? <CircularProgress size={20} /> : 'Explain'}
-            </Button>
-          )}
-          {aiExplanation && (
-            <Button startIcon={<ContentCopyIcon />} onClick={handleCopy}>
-              Copy Explanation
-            </Button>
-          )}
-        </CardActions>
-      </Card>
+      {command && output && (
+        <Box sx={{ mt: 2 }}>
+          <Button variant="contained" onClick={handleExplain} disabled={loading}>
+            {loading ? <CircularProgress size={20} /> : "💡 Explain with AI"}
+          </Button>
+        </Box>
+      )}
 
       {aiExplanation && (
-        <Card sx={{ width: '100%', maxWidth: 700, boxShadow: 3, borderRadius: 2, mt: 2 }}>
+        <Card sx={{ mt: 4, backgroundColor: '#f0f8ff', boxShadow: 3 }}>
           <CardContent>
-            <Typography variant="subtitle1" gutterBottom>
-              AI Explanation:
+            <Typography variant="h6" gutterBottom>
+              💡 AI Explanation
             </Typography>
-            <Typography sx={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
+            <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
               {aiExplanation}
             </Typography>
+            <Box sx={{ textAlign: 'right', mt: 2 }}>
+              <Button size="small" variant="outlined" onClick={handleCopy}>
+                📋 Copy
+              </Button>
+            </Box>
           </CardContent>
         </Card>
       )}
