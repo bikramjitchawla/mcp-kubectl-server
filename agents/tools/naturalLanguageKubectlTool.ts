@@ -9,10 +9,10 @@ type Tool = typeof allTools[number];
 
 export interface NLPResult {
   command?: string;
-  output?: string;
-  yaml?:   string;
-  pod?:    any;
-  error?:  string;
+  output?:  string;
+  yaml?:    string;
+  pod?:     any;
+  error?:   string;
 }
 
 export const naturalLanguageKubectlTool = async (
@@ -42,7 +42,7 @@ export const naturalLanguageKubectlTool = async (
     return await createPodTool({ name, template, namespace, dryRun });
   }
 
-  // ── 1) Gather pods for context ───────────────────────────────────────────────
+  // ── 1) Gather pod names for context ─────────────────────────────────────────
   const kc = new k8s.KubeConfig();
   kc.loadFromDefault();
   const coreApi = kc.makeApiClient(k8s.CoreV1Api);
@@ -51,9 +51,10 @@ export const naturalLanguageKubectlTool = async (
     const podList = await coreApi.listPodForAllNamespaces();
     podNames = podList.items.map(p => p.metadata?.name!).filter(Boolean);
   } catch {
-    /* ignore */
+    /* ignore if cluster not accessible */
   }
-  // ── 2) Build LLM prompt ───────────────────────────────────────────────────────
+
+  // ── 2) Build the LLM prompt ─────────────────────────────────────────────────
   const toolsDescription = allTools
     .map(t => {
       const paramsDesc = Object.entries(t.parameters)
@@ -87,6 +88,7 @@ User query: "${rawQuery}"
   let parsed: { tool: string; params: Record<string, any> };
   try {
     const aiRaw = await agentRunner.runAgentPrompt(prompt, "llama-3.1-8b-instant");
+    console.log("[MCP] AI raw response:", aiRaw.replace(/\n/g, "\\n"));
     const match = aiRaw.match(/{[\s\S]*\}$/);
     if (!match) throw new Error("No JSON found");
     parsed = JSON.parse(match[0]);
@@ -96,25 +98,25 @@ User query: "${rawQuery}"
     return { error: `Could not parse AI response: ${err.message}` };
   }
 
-  // ── 3) Fallback: logs-tail (last N lines) ────────────────────────────────────
+  // ── 3) Fallback: tail-logs (last N lines) ────────────────────────────────────
   const logsMatch = rawQuery.match(
     /logs?\s+([\w-]+)\s+(?:tail|last)?\s*(\d+)\s*lines?/i
   );
   if (logsMatch) {
-    console.log("[MCP] Logs-tail fallback:", logsMatch[1], logsMatch[2]);
-    const podName = logsMatch[1];
-    const tail = parseInt(logsMatch[2], 10);
+    const [, podName, count] = logsMatch;
     const ns = rawQuery.match(/in\s+(?:the\s+)?([\w-]+)(?:\s+namespace)?/i)?.[1] || "default";
+    console.log("[MCP] Logs-tail fallback:", podName, count);
     parsed.tool = "monitoringTool";
-    parsed.params = { type: "pod-logs", podName, namespace: ns, tail };
+    parsed.params = { type: "pod-logs", podName, namespace: ns, tail: parseInt(count, 10) };
   }
 
   // ── 4) Fallback: resource-usage / top pods ───────────────────────────────────
   if (
-    /\b(top\s+pods|cpu\s+and\s+memory|memory\s+usage|resource-usage|usage)\b/i.test(rawQuery)
+    /\b(top\s+pods?)\b/i.test(rawQuery) ||
+    /\b(cpu\s+and\s+memory|memory\s+usage|resource-usage|usage)\b/i.test(rawQuery)
   ) {
-    console.log("[MCP] Resource-usage fallback");
     const ns = rawQuery.match(/in\s+(?:the\s+)?([\w-]+)(?:\s+namespace)?/i)?.[1];
+    console.log("[MCP] Resource-usage fallback");
     parsed.tool = "monitoringTool";
     parsed.params = { type: "resource-usage", namespace: ns };
   }
@@ -146,7 +148,7 @@ User query: "${rawQuery}"
   }
 
   // ── 8) Fallback: list namespaces ──────────────────────────────────────────────
-  if (/^(get|list)\s+(all\s+)?namespaces?(\s|$)/i.test(query)) {
+  if (/^(get|list)\s+(all\s+)?namespaces?(\s|$)/.test(query)) {
     console.log("[MCP] Namespaces fallback");
     parsed.tool = "namespaceAnalyzerTool";
     parsed.params = {};
@@ -164,7 +166,7 @@ User query: "${rawQuery}"
     const result = await (tool.handler as any)(parsed.params);
     return { ...result };
   } catch (err: any) {
-    console.error(`[MCP] Tool error:`, err);
+    console.error("[MCP] Tool error:", err);
     return { error: `Execution failed: ${err.message}` };
   }
 };

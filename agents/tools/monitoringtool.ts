@@ -76,7 +76,7 @@ export const monitoringTool = async (
       };
   }
 
-  console.log("🔧 running command:", cmd);
+  console.log("running command:", cmd);
   try {
     const raw = execSync(cmd, { encoding: "utf-8" });
     console.log("raw output:", raw.replace(/\n/g, "\\n"));
