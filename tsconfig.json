@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "target": "es2020",
+    "target": "es6",
     "lib": [
       "dom",
       "dom.iterable",
@@ -11,22 +11,19 @@
     "strict": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
-    "esModuleInterop": true,
+    "incremental": true,
     "module": "esnext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "preserve",
-    "incremental": true,
-    // Alias setup starts here
+    "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
       "@/*": [
         "./*"
       ]
-    }
-    // Alias setup ends here
-    ,
+    },
+    "esModuleInterop": true,
     "plugins": [
       {
         "name": "next"
@@ -37,7 +34,8 @@
     "next-env.d.ts",
     "**/*.ts",
     "**/*.tsx",
-    ".next/types/**/*.ts"
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

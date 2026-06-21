@@ -1,0 +1,31 @@
+{
+  "agent": "diagnoser",
+  "goal": "Diagnose failing Kubernetes workloads and produce an incident-ready remediation plan",
+  "memory": {
+    "previous_failures": [],
+    "team": "platform-engineering"
+  },
+  "tools": [
+    "kubernetes-api",
+    "events",
+    "logs",
+    "runbook-generator"
+  ],
+  "input_context": {
+    "namespace": "default",
+    "includeLogs": true,
+    "tailLines": 120,
+    "maxPods": 60,
+    "includeClusterResources": false,
+    "enableAiSummary": true
+  },
+  "output_expectation": {
+    "format": "markdown",
+    "includes": [
+      "root cause",
+      "evidence",
+      "suggested actions",
+      "automation commands"
+    ]
+  }
+}

@@ -1,78 +1,52 @@
+# Kubernetes Diagnostic MCP
 
+A Next.js based diagnostic console and API for read-only Kubernetes incident triage.
 
-# 🤖 AI-Powered Kubernetes Assistant with MCP
+## What It Does
 
-An **AI-driven Kubernetes assistant** built using **Model Context Protocol (MCP)** that enables natural language interaction with your Kubernetes cluster. It supports dynamic tooling, safe command generation, Helm integration, and real-time AI explanations — all from a clean web UI.
+- Accepts an MCP-style JSON request at `/api/mcp`.
+- Collects namespace-scoped Kubernetes state through `@kubernetes/client-node`.
+- Diagnoses common platform issues with deterministic rules.
+- Optionally uses OpenAI to turn the findings into an incident-ready narrative.
+- Presents findings, evidence, impact, recommended actions, and read-only automation commands.
 
----
+## Run Locally
 
-## 🚀 Key Features
-
-### 🧠 Natural Language Kubernetes Control
-
-* Convert natural language queries into safe `kubectl`/`helm` commands using **Groq/OpenAI (LLM)**.
-* Auto-validates generated commands (`get`, `describe`, `logs`, `top`, etc.).
-* Fallback mechanism for unsupported or unsafe commands.
-
-### 🔧 Tool-Based Architecture
-
-Each Kubernetes operation is modularized as a **tool**, invoked dynamically via MCP based on user intent.
-
-#### 🛠️ Available Tools
-
-* `naturalLanguageKubectl` — Parse and run safe Kubernetes commands.
-* `logsFetcher` — Fetch pod logs.
-* `rolloutChecker` — Monitor deployment rollout status.
-* `scaleDeployment` — Scale deployments up/down.
-* `namespaceAnalyzer` — Analyze namespaces.
-* `explain_kubectl_result` — AI explanation of command outputs.
-* `kubectlExplain` — Explain Kubernetes object fields.
-* `portForwardPod` — Port forward from a pod to your local machine.
-* `execCommandInPod` — Execute shell commands in a pod.
-* `getPodEvents` — Get Kubernetes event history for a pod.
-* `monitoringTool` — Check pod health, node resource usage, cluster health, etc.
-* `helmTool` — Install, upgrade, or uninstall Helm charts.
-* `createPodTool` — Dynamically generate and deploy pods from templates or custom specs.
-
-> 🗂 Tools are located in `/tools` and registered centrally in `tool.ts`.
-
----
-
-## 🧬 Architecture
-
-```
-User Query (UI)
-      ↓
-   /api/mcp
-      ↓
- +-------------+
- |  MCPServer  |
- +-------------+
-     ↓       ↘
- Tool Router   LLM Agent (Groq/OpenAI)
-     ↓             ↓
- Tool Handler → kubectl / helm
-     ↓             ↓
-   Response    (Optional AI Explanation)
-      ↓
-    UI Renderer
+```bash
+npm install
+npm run dev
 ```
 
----
+Open `http://localhost:3000`.
 
-## 🧪 Example Prompts
+The app uses your local kubeconfig by default. When deployed inside Kubernetes, it uses the pod service account.
 
-### General Use
+## Environment
 
-* "Get all pods not in running state."
-* "Show logs for pod `nginx-deployment-abc123` in namespace `default`."
-* "Port-forward `traefik` pod port 80 to local port 8080."
-* "Explain what `kubectl get namespaces` shows."
+```bash
+OPENAI_API_KEY=optional
+OPENAI_MODEL=gpt-4o-mini
+```
 
-### Monitoring
+If `OPENAI_API_KEY` is missing, the app still returns the deterministic diagnostic report.
 
-* "Check if any pods are failing their liveness probe."
-* "What is the current CPU and memory usage across nodes?"
-* "List top resource-consuming pods."
+## API Example
 
+```bash
+curl -X POST http://localhost:3000/api/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent": "kubernetes-diagnoser",
+    "goal": "Find why checkout is failing",
+    "input_context": {
+      "namespace": "default",
+      "workload": "checkout",
+      "includeLogs": true,
+      "enableAiSummary": true
+    }
+  }'
+```
 
+## Architecture
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
