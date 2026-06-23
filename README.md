@@ -47,6 +47,206 @@ Open `http://localhost:3000`. The app reads your local `~/.kube/config` and popu
 
 ---
 
+## Testing locally with Kind
+
+The fastest way to get a real Kubernetes cluster for testing is the companion platform repository:
+
+**[github.com/bikramjitchawla/Kubernetes-cluster-development](https://github.com/bikramjitchawla/Kubernetes-cluster-development)**
+
+It provisions a full-featured local Kind cluster (`test-cluster`) with Calico CNI, MetalLB, cert-manager, Traefik ingress, Polaris, and optional Rook-Ceph storage — everything needed to exercise every diagnostic finding this tool can surface.
+
+### Prerequisites
+
+Install the following tools before starting:
+
+| Tool | Purpose |
+|---|---|
+| [Docker](https://www.docker.com/) | Kind runs cluster nodes as containers |
+| [Kind](https://kind.sigs.k8s.io/) | Local Kubernetes cluster |
+| [kubectl](https://kubernetes.io/docs/tasks/tools/) | CLI for interacting with the cluster |
+| [Skaffold](https://skaffold.dev/) | Used by the cluster bootstrap scripts |
+| [Helm](https://helm.sh/) | Deploys Traefik, Polaris, and cert-manager |
+| [Node.js 22+](https://nodejs.org/) | Runs the diagnostic app |
+
+### 1. Spin up the cluster
+
+```bash
+git clone https://github.com/bikramjitchawla/Kubernetes-cluster-development.git
+cd Kubernetes-cluster-development
+./start.sh
+```
+
+The script creates the Kind cluster and installs Calico, MetalLB, cert-manager, Traefik, and Polaris in order. It takes around 3–5 minutes on the first run. Verify everything is healthy before continuing:
+
+```bash
+kubectl get nodes
+# NAME                         STATUS   ROLES           AGE
+# test-cluster-control-plane   Ready    control-plane   3m
+# test-cluster-worker          Ready    <none>          3m
+# test-cluster-worker2         Ready    <none>          3m
+
+kubectl get pods -n traefik
+kubectl get pods -n cert-manager
+kubectl get clusterissuer selfsigned
+```
+
+### 2. Run the diagnostic app
+
+```bash
+cd /path/to/ai-mcp-server
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`. The context selector will show `kind-test-cluster`. Set the namespace to `kube-system` and click **Run diagnostics** — you will immediately see real pods, node conditions, and events from the cluster.
+
+### 3. Test specific findings
+
+The scenarios below create genuine failure conditions so you can verify each diagnostic category. Run each block and then hit **Run diagnostics** in the UI against the `default` namespace.
+
+**ImagePullBackOff** — image does not exist in any registry
+
+```bash
+kubectl create deployment bad-image --image=nonexistent-registry.io/app:broken
+```
+
+Expected finding: `Container bad-image cannot pull image` (high severity, image category).
+
+---
+
+**CrashLoopBackOff** — process exits immediately
+
+```bash
+kubectl create deployment crashloop \
+  --image=busybox \
+  -- /bin/sh -c "echo 'crashing'; exit 1"
+```
+
+Expected finding: `Container crashloop is restarting` (high/critical depending on restart count).
+
+---
+
+**OOMKilled** — container exceeds its memory limit
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oom-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oom-demo
+  template:
+    metadata:
+      labels:
+        app: oom-demo
+    spec:
+      containers:
+        - name: stress
+          image: polinux/stress
+          command: ["stress"]
+          args: ["--vm", "1", "--vm-bytes", "200M", "--vm-hang", "0"]
+          resources:
+            limits:
+              memory: 64Mi
+EOF
+```
+
+Expected finding: `Container stress was OOMKilled` (high severity, resource category).
+
+---
+
+**Pending PVC** — no provisioner available for the requested StorageClass
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pending-pvc
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: does-not-exist
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+```
+
+Expected finding: `PVC pending-pvc is Pending` (high severity, storage category).
+
+If you have installed the optional Rook-Ceph add-on from the cluster repo (`cd rook-ceph && ./install.sh`), you can use `storageClassName: rook-ceph-filesystem` and watch the PVC bind successfully — the finding will disappear on the next run.
+
+---
+
+**Suspended CronJob**
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: suspended-job
+spec:
+  schedule: "*/5 * * * *"
+  suspend: true
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: hello
+              image: busybox
+              command: ["echo", "hello"]
+          restartPolicy: Never
+EOF
+```
+
+Expected finding: `CronJob suspended-job is suspended` (medium severity, availability category).
+
+---
+
+**Service with no endpoints** — selector does not match any pods
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ghost-service
+spec:
+  selector:
+    app: does-not-exist
+  ports:
+    - port: 80
+EOF
+```
+
+Expected finding: `Service ghost-service has no ready endpoints` (high severity, networking category).
+
+---
+
+### 4. Clean up test resources
+
+```bash
+kubectl delete deployment bad-image crashloop oom-demo
+kubectl delete pvc pending-pvc
+kubectl delete cronjob suspended-job
+kubectl delete service ghost-service
+```
+
+### 5. Tear down the cluster
+
+```bash
+cd Kubernetes-cluster-development
+./delete.sh
+```
+
+---
+
 ## Environment variables
 
 | Variable | Required | Default | Description |
