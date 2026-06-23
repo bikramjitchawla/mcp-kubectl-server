@@ -26,7 +26,7 @@ spec:
           #   docker build -t localhost:5001/mcp-diagnostics:latest .
           #   docker push localhost:5001/mcp-diagnostics:latest
           image: localhost:5001/mcp-diagnostics:latest
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
               name: http

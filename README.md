@@ -47,6 +47,54 @@ Open `http://localhost:3000`. The app reads your local `~/.kube/config` and popu
 
 ---
 
+## Running with Skaffold
+
+[Skaffold](https://skaffold.dev/) is the recommended way to build and deploy the app to your Kind cluster. It builds the Docker image, loads it directly into the Kind nodes (no registry needed), applies the `k8s/` manifests, and forwards port `3000` so you can open the app immediately.
+
+### One-shot deploy
+
+```bash
+skaffold run
+```
+
+Builds the image, loads it into the cluster, applies all manifests, and exits. Use this when you just want to deploy without watching for changes.
+
+### Dev mode (watch + auto-redeploy)
+
+```bash
+skaffold dev
+```
+
+Does the same as `skaffold run`, then watches the project for changes. On any file change it rebuilds the image, reloads it into the cluster, and restarts the pod. Streams pod logs to your terminal. Press `Ctrl+C` to tear everything down cleanly.
+
+While `skaffold dev` is running the app is available at `http://localhost:3000` via port-forward.
+
+### Tear down
+
+```bash
+skaffold delete
+```
+
+Removes all resources that were applied by Skaffold (`mcp-diagnostics` namespace and everything inside it).
+
+### How it works
+
+Skaffold is configured in [`skaffold.yaml`](skaffold.yaml) to:
+
+1. Build the image with the project [`Dockerfile`](Dockerfile)
+2. Load the image directly into the Kind cluster nodes using `kind load docker-image` — no registry required
+3. Apply the manifests in `k8s/` in order: namespace → RBAC → deployment → ingress
+4. Port-forward the `mcp-diagnostics` service to `localhost:3000`
+
+> **Secret (optional)** — If you want API key auth or AI narrative, create `k8s/secret.yaml` from the example file and apply it manually before running Skaffold — it is intentionally excluded from the Skaffold manifests to avoid committing credentials.
+> ```bash
+> cp k8s/secret.example.yaml k8s/secret.yaml
+> # edit k8s/secret.yaml with your base64-encoded values
+> kubectl apply -f k8s/secret.yaml
+> ```
+
+---
+
 ## Testing locally with Kind
 
 The fastest way to get a real Kubernetes cluster for testing is the companion platform repository:
