@@ -47,7 +47,10 @@ export interface DiagnosticScope {
   tailLines: number;
   maxPods: number;
   includeClusterResources: boolean;
+  includeNodes: boolean;
+  includeHpa: boolean;
   enableAiSummary: boolean;
+  context?: string;
 }
 
 export interface KubernetesResourceRef {
@@ -143,6 +146,50 @@ export interface ContainerLogSnapshot {
   error?: string;
 }
 
+export interface NodeSnapshot {
+  name: string;
+  ready: boolean;
+  roles: string[];
+  conditions: ConditionSnapshot[];
+  taints: { key: string; effect: string; value?: string }[];
+  allocatable: Record<string, string>;
+  capacity: Record<string, string>;
+  kubeletVersion?: string;
+  unschedulable: boolean;
+}
+
+export interface HPASnapshot {
+  name: string;
+  namespace: string;
+  targetKind: string;
+  targetName: string;
+  minReplicas: number;
+  maxReplicas: number;
+  currentReplicas: number;
+  desiredReplicas: number;
+  conditions: ConditionSnapshot[];
+}
+
+export interface PVCSnapshot {
+  name: string;
+  namespace: string;
+  phase: string;
+  storageClass?: string;
+  capacity?: string;
+  volumeName?: string;
+  accessModes: string[];
+}
+
+export interface CronJobSnapshot {
+  name: string;
+  namespace: string;
+  schedule: string;
+  suspended: boolean;
+  active: number;
+  lastScheduleTime?: string;
+  lastSuccessfulTime?: string;
+}
+
 export interface AccessError {
   operation: string;
   statusCode?: number;
@@ -158,6 +205,10 @@ export interface KubernetesSnapshot {
   services: ServiceSnapshot[];
   events: EventSnapshot[];
   logs: ContainerLogSnapshot[];
+  nodes: NodeSnapshot[];
+  hpas: HPASnapshot[];
+  pvcs: PVCSnapshot[];
+  cronJobs: CronJobSnapshot[];
   accessErrors: AccessError[];
 }
 
@@ -189,6 +240,8 @@ export interface DiagnosisSummary {
   warningEvents: number;
   criticalFindings: number;
   highFindings: number;
+  notReadyNodes: number;
+  pendingPvcs: number;
   topRisks: string[];
 }
 

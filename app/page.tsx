@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
-import { Activity, Bot, ClipboardList, Loader2, Search, ShieldCheck, Terminal } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Activity, Bot, ChevronDown, ClipboardList, Clock, Loader2, Search, Server, ShieldCheck, Terminal } from 'lucide-react';
+import { HistoryEntry } from '@/lib/store/history';
 import { MCPResponse } from '@/types/mcp';
 
 const defaultGoal = 'Diagnose failing workloads and produce an incident-ready remediation plan.';
@@ -13,9 +14,28 @@ export default function HomePage() {
   const [goal, setGoal] = useState(defaultGoal);
   const [includeLogs, setIncludeLogs] = useState(true);
   const [enableAiSummary, setEnableAiSummary] = useState(true);
+  const [includeNodes, setIncludeNodes] = useState(true);
+  const [context, setContext] = useState('');
+  const [contexts, setContexts] = useState<string[]>([]);
   const [result, setResult] = useState<MCPResponse | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/contexts')
+      .then((r) => r.json())
+      .then((data) => {
+        setContexts(data.contexts ?? []);
+        if (data.current) setContext(data.current);
+      })
+      .catch(() => {});
+
+    fetch('/api/history')
+      .then((r) => r.json())
+      .then((data) => setHistory(data.runs ?? []))
+      .catch(() => {});
+  }, []);
 
   const runDiagnosis = async () => {
     setLoading(true);
@@ -28,10 +48,13 @@ export default function HomePage() {
       tools: ['kubernetes-api', 'events', 'logs', 'runbook-generator'],
       input_context: {
         namespace,
+        context: context || undefined,
         labelSelector: labelSelector || undefined,
         workload: workload || undefined,
         includeLogs,
         enableAiSummary,
+        includeNodes,
+        includeHpa: true,
         tailLines: 120,
         maxPods: 60,
       },
@@ -52,6 +75,11 @@ export default function HomePage() {
       setError(data.details ?? data.error ?? 'Diagnostic request failed');
     } else {
       setResult(data);
+      // Refresh history after a successful run
+      fetch('/api/history')
+        .then((r) => r.json())
+        .then((d) => setHistory(d.runs ?? []))
+        .catch(() => {});
     }
 
     setLoading(false);
@@ -71,6 +99,20 @@ export default function HomePage() {
         </div>
 
         <div className="form-grid">
+          {contexts.length > 0 && (
+            <div className="field">
+              <label htmlFor="context">Cluster context</label>
+              <div className="select-wrap">
+                <select id="context" value={context} onChange={(e) => setContext(e.target.value)}>
+                  {contexts.map((ctx) => (
+                    <option key={ctx} value={ctx}>{ctx}</option>
+                  ))}
+                </select>
+                <ChevronDown size={14} />
+              </div>
+            </div>
+          )}
+
           <div className="field">
             <label htmlFor="namespace">Namespace</label>
             <input id="namespace" value={namespace} onChange={(event) => setNamespace(event.target.value)} />
@@ -108,6 +150,10 @@ export default function HomePage() {
               Collect recent logs from unhealthy pods
             </label>
             <label className="toggle">
+              <input type="checkbox" checked={includeNodes} onChange={(event) => setIncludeNodes(event.target.checked)} />
+              Include node health (requires ClusterRole)
+            </label>
+            <label className="toggle">
               <input
                 type="checkbox"
                 checked={enableAiSummary}
@@ -126,13 +172,41 @@ export default function HomePage() {
         <p className="meta">
           Uses kubeconfig or in-cluster identity. The current implementation only reads Kubernetes state and proposes commands.
         </p>
+
+        {history.length > 0 && (
+          <div className="history-panel">
+            <h4><Clock size={14} /> Recent runs</h4>
+            <ul className="history-list">
+              {history.slice(0, 8).map((entry) => (
+                <li key={entry.requestId}>
+                  <button
+                    className="history-item"
+                    onClick={() => {
+                      fetch(`/api/history/${entry.requestId}`)
+                        .then((r) => r.json())
+                        .then((data) => {
+                          setResult(data);
+                          setError('');
+                        })
+                        .catch(() => {});
+                    }}
+                  >
+                    <span className={`status-dot ${entry.summary.health}`} />
+                    <span className="history-ns">{entry.scope.namespace}</span>
+                    <span className="history-time">{new Date(entry.generatedAt).toLocaleTimeString()}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </aside>
 
       <main className="content">
         <div className="toolbar">
           <div>
             <h2>Incident workspace</h2>
-            <p className="helper">Collects pods, controllers, services, events, and logs, then produces evidence-backed findings.</p>
+            <p className="helper">Collects pods, controllers, nodes, services, events, and logs, then produces evidence-backed findings.</p>
           </div>
           {result ? <span className={`status-pill ${result.summary.health}`}>{result.summary.health}</span> : null}
         </div>
@@ -145,6 +219,12 @@ export default function HomePage() {
               <Metric label="Pods" value={String(result.summary.totalPods)} icon={<Activity size={18} />} />
               <Metric label="Unhealthy" value={String(result.summary.unhealthyPods)} icon={<ClipboardList size={18} />} />
               <Metric label="Warnings" value={String(result.summary.warningEvents)} icon={<Terminal size={18} />} />
+              {result.snapshot.nodes.length > 0 && (
+                <Metric label="Nodes" value={`${result.snapshot.nodes.length - result.summary.notReadyNodes}/${result.snapshot.nodes.length}`} icon={<Server size={18} />} />
+              )}
+              {result.snapshot.pvcs.length > 0 && (
+                <Metric label="PVCs" value={`${result.snapshot.pvcs.filter(p => p.phase === 'Bound').length}/${result.snapshot.pvcs.length}`} icon={<Activity size={18} />} />
+              )}
               <Metric label="AI" value={result.metadata.aiStatus} icon={<Bot size={18} />} />
             </section>
 

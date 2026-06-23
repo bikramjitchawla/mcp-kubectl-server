@@ -1,10 +1,14 @@
 import {
   AutomationCommand,
+  CronJobSnapshot,
   DiagnosticFinding,
   EventSnapshot,
+  HPASnapshot,
   KubernetesResourceRef,
   KubernetesSnapshot,
+  NodeSnapshot,
   PodSnapshot,
+  PVCSnapshot,
   Severity,
   WorkloadSnapshot,
 } from '@/types/mcp';
@@ -13,6 +17,7 @@ const imagePullReasons = new Set(['ImagePullBackOff', 'ErrImagePull', 'InvalidIm
 const crashReasons = new Set(['CrashLoopBackOff', 'Error']);
 const schedulingReasons = new Set(['FailedScheduling', 'Unschedulable']);
 const probeReasons = new Set(['Unhealthy', 'FailedPostStartHook', 'FailedPreStopHook']);
+const nodePressureConditions = ['MemoryPressure', 'DiskPressure', 'PIDPressure'] as const;
 
 export function analyzeKubernetesSnapshot(snapshot: KubernetesSnapshot): DiagnosticFinding[] {
   const findings: DiagnosticFinding[] = [];
@@ -54,6 +59,25 @@ export function analyzeKubernetesSnapshot(snapshot: KubernetesSnapshot): Diagnos
         ],
       });
     }
+  }
+
+  for (const node of snapshot.nodes) {
+    findings.push(...analyzeNode(node));
+  }
+
+  for (const hpa of snapshot.hpas) {
+    const finding = analyzeHPA(hpa);
+    if (finding) findings.push(finding);
+  }
+
+  for (const pvc of snapshot.pvcs) {
+    const finding = analyzePVC(pvc);
+    if (finding) findings.push(finding);
+  }
+
+  for (const cronJob of snapshot.cronJobs) {
+    const finding = analyzeCronJob(cronJob);
+    if (finding) findings.push(finding);
   }
 
   findings.push(...analyzeWarningEvents(snapshot));
@@ -270,6 +294,210 @@ function analyzeWorkload(workload: WorkloadSnapshot): DiagnosticFinding | undefi
       ),
       readCommand(`kubectl -n ${workload.namespace} get pods -o wide`, 'Correlate controller with child pods'),
     ],
+  };
+}
+
+function analyzeNode(node: NodeSnapshot): DiagnosticFinding[] {
+  const findings: DiagnosticFinding[] = [];
+
+  const notReadyCond = node.conditions.find((c) => c.type === 'Ready' && c.status !== 'True');
+  if (notReadyCond) {
+    findings.push({
+      id: `node-${node.name}-notready`,
+      severity: 'critical',
+      category: 'availability',
+      title: `Node ${node.name} is NotReady`,
+      resource: { kind: 'Node', name: node.name },
+      signal: notReadyCond.reason ?? 'NotReady',
+      evidence: compact([
+        notReadyCond.message,
+        `Roles: ${node.roles.join(', ')}`,
+        `Kubelet: ${node.kubeletVersion ?? 'unknown'}`,
+      ]),
+      impact: 'All pods on this node are effectively unreachable. The scheduler will not place new pods here.',
+      recommendedActions: [
+        'SSH to the node and check kubelet: `systemctl status kubelet` and `journalctl -u kubelet --since "5m ago"`',
+        'Verify the node has network connectivity to the API server.',
+        'Check for disk or memory exhaustion at the OS level.',
+      ],
+      automation: [
+        readCommand(`kubectl describe node ${node.name}`, 'Inspect node conditions and recent events'),
+        readCommand(`kubectl get pods -A --field-selector spec.nodeName=${node.name}`, 'List all pods on this node'),
+      ],
+    });
+  }
+
+  for (const pressureType of nodePressureConditions) {
+    const cond = node.conditions.find((c) => c.type === pressureType && c.status === 'True');
+    if (cond) {
+      const pressureAdvice: Record<typeof pressureType, string> = {
+        MemoryPressure: 'Identify memory-hungry containers and increase node capacity, or reduce pod memory limits.',
+        DiskPressure: 'Remove unused images (`crictl rmi --prune`) and logs. Enable log rotation or increase disk.',
+        PIDPressure: 'Check for process leaks in containers. Review pid limits and securityContext settings.',
+      };
+
+      findings.push({
+        id: `node-${node.name}-${pressureType.toLowerCase()}`,
+        severity: 'high',
+        category: 'resource',
+        title: `Node ${node.name} has ${pressureType}`,
+        resource: { kind: 'Node', name: node.name },
+        signal: `${pressureType}=True`,
+        evidence: compact([cond.reason, cond.message, `Kubelet: ${node.kubeletVersion ?? 'unknown'}`]),
+        impact: 'The node may evict pods or refuse to schedule new workloads until pressure is relieved.',
+        recommendedActions: [pressureAdvice[pressureType]],
+        automation: [
+          readCommand(`kubectl describe node ${node.name}`, 'Inspect allocatable and conditions'),
+          readCommand(`kubectl top node ${node.name}`, 'Check live node resource usage'),
+        ],
+      });
+    }
+  }
+
+  if (node.unschedulable) {
+    findings.push({
+      id: `node-${node.name}-cordoned`,
+      severity: 'medium',
+      category: 'scheduling',
+      title: `Node ${node.name} is cordoned`,
+      resource: { kind: 'Node', name: node.name },
+      signal: 'unschedulable=true',
+      evidence: compact([`Roles: ${node.roles.join(', ')}`, `Kubelet: ${node.kubeletVersion ?? 'unknown'}`]),
+      impact: 'No new pods will be scheduled on this node. Existing pods are unaffected until they restart.',
+      recommendedActions: [
+        'Verify any planned node maintenance is complete.',
+        'Uncordon when ready: `kubectl uncordon ' + node.name + '`',
+      ],
+      automation: [readCommand(`kubectl describe node ${node.name}`, 'Inspect node status and taints')],
+    });
+  }
+
+  return findings;
+}
+
+function analyzeHPA(hpa: HPASnapshot): DiagnosticFinding | undefined {
+  const atMax = hpa.maxReplicas > 0 && hpa.currentReplicas >= hpa.maxReplicas;
+  const unableToScale = hpa.conditions.some((c) => c.type === 'AbleToScale' && c.status === 'False');
+  const scalingLimited = hpa.conditions.some((c) => c.type === 'ScalingLimited' && c.status === 'True');
+
+  if (!atMax && !unableToScale) return undefined;
+
+  if (unableToScale) {
+    return {
+      id: `hpa-${hpa.namespace}-${hpa.name}-unable`,
+      severity: 'high',
+      category: 'availability',
+      title: `HPA ${hpa.name} cannot scale ${hpa.targetKind}/${hpa.targetName}`,
+      resource: { kind: 'HorizontalPodAutoscaler', namespace: hpa.namespace, name: hpa.name },
+      signal: 'AbleToScale=False',
+      evidence: compact([
+        `Target: ${hpa.targetKind}/${hpa.targetName}`,
+        `Replicas: ${hpa.currentReplicas}/${hpa.maxReplicas} (desired: ${hpa.desiredReplicas})`,
+        ...hpa.conditions
+          .filter((c) => c.status !== 'True')
+          .map((c) => `${c.type}: ${c.reason ?? ''} — ${c.message ?? ''}`),
+      ]),
+      impact: 'The workload cannot scale to meet demand. Traffic may be dropped or delayed under load.',
+      recommendedActions: [
+        'Verify the metrics-server is running: `kubectl -n kube-system get pods -l k8s-app=metrics-server`',
+        'Check the HPA target reference matches an existing workload.',
+        'Inspect HPA events for the concrete scaling error.',
+      ],
+      automation: [
+        readCommand(`kubectl -n ${hpa.namespace} describe hpa ${hpa.name}`, 'Inspect HPA conditions and events'),
+        readCommand(`kubectl -n ${hpa.namespace} get ${hpa.targetKind.toLowerCase()} ${hpa.targetName}`, 'Verify target workload'),
+      ],
+    };
+  }
+
+  return {
+    id: `hpa-${hpa.namespace}-${hpa.name}-maxed`,
+    severity: scalingLimited ? 'high' : 'medium',
+    category: 'resource',
+    title: `HPA ${hpa.name} is at maximum replicas (${hpa.maxReplicas})`,
+    resource: { kind: 'HorizontalPodAutoscaler', namespace: hpa.namespace, name: hpa.name },
+    signal: `currentReplicas=${hpa.currentReplicas} == maxReplicas=${hpa.maxReplicas}`,
+    evidence: compact([
+      `Target: ${hpa.targetKind}/${hpa.targetName}`,
+      `Min/Max: ${hpa.minReplicas}–${hpa.maxReplicas}`,
+      `Current/Desired: ${hpa.currentReplicas}/${hpa.desiredReplicas}`,
+      scalingLimited ? 'ScalingLimited=True: further scaling is blocked' : undefined,
+    ]),
+    impact: 'The workload cannot scale further. If load increases, requests may be rejected or delayed.',
+    recommendedActions: [
+      'Increase maxReplicas if the workload legitimately needs more capacity.',
+      'Check if the resource spike is expected or caused by a bug or memory leak.',
+      'Consider vertical scaling or improving per-replica throughput.',
+    ],
+    automation: [
+      readCommand(`kubectl -n ${hpa.namespace} describe hpa ${hpa.name}`, 'Inspect current metrics and conditions'),
+      readCommand(`kubectl -n ${hpa.namespace} top pods`, 'Check resource usage of target pods'),
+    ],
+  };
+}
+
+function analyzePVC(pvc: PVCSnapshot): DiagnosticFinding | undefined {
+  if (pvc.phase === 'Bound') return undefined;
+
+  const severity: Severity = pvc.phase === 'Lost' ? 'critical' : 'high';
+
+  return {
+    id: `pvc-${pvc.namespace}-${pvc.name}-${pvc.phase.toLowerCase()}`,
+    severity,
+    category: 'storage',
+    title: `PVC ${pvc.name} is ${pvc.phase}`,
+    resource: { kind: 'PersistentVolumeClaim', namespace: pvc.namespace, name: pvc.name },
+    signal: `phase=${pvc.phase}`,
+    evidence: compact([
+      `StorageClass: ${pvc.storageClass ?? 'default'}`,
+      `Access modes: ${pvc.accessModes.join(', ') || 'none'}`,
+      pvc.capacity ? `Requested: ${pvc.capacity}` : undefined,
+      pvc.phase === 'Lost' ? `Backing PV ${pvc.volumeName ?? 'unknown'} is no longer available.` : undefined,
+    ]),
+    impact:
+      pvc.phase === 'Lost'
+        ? 'The PVC has lost its backing volume. Any pod mounting it will fail to start and data may be irrecoverable.'
+        : 'Pods that mount this PVC remain in Pending state until the claim is bound.',
+    recommendedActions:
+      pvc.phase === 'Lost'
+        ? [
+            'Check if the backing PersistentVolume was accidentally deleted: `kubectl get pv`',
+            'Restore from a volume snapshot if your storage class supports it.',
+            'For Rook-Ceph, check cluster health: `kubectl -n rook-ceph get cephcluster -o wide`',
+          ]
+        : [
+            'Verify a matching PersistentVolume exists for the requested StorageClass and access mode.',
+            'Check the storage provisioner is running (e.g. `kubectl -n rook-ceph get pods`).',
+            'Inspect PVC events for the exact provisioning error.',
+          ],
+    automation: [
+      readCommand(`kubectl -n ${pvc.namespace} describe pvc ${pvc.name}`, 'Inspect PVC binding conditions and events'),
+      readCommand(`kubectl get pv`, 'List all PersistentVolumes and their claim bindings'),
+    ],
+  };
+}
+
+function analyzeCronJob(cronJob: CronJobSnapshot): DiagnosticFinding | undefined {
+  if (!cronJob.suspended) return undefined;
+
+  return {
+    id: `cronjob-${cronJob.namespace}-${cronJob.name}-suspended`,
+    severity: 'medium',
+    category: 'availability',
+    title: `CronJob ${cronJob.name} is suspended`,
+    resource: { kind: 'CronJob', namespace: cronJob.namespace, name: cronJob.name },
+    signal: 'suspended=true',
+    evidence: compact([
+      `Schedule: ${cronJob.schedule}`,
+      cronJob.lastScheduleTime ? `Last scheduled: ${cronJob.lastScheduleTime}` : 'Never scheduled.',
+      cronJob.lastSuccessfulTime ? `Last successful: ${cronJob.lastSuccessfulTime}` : undefined,
+    ]),
+    impact: 'Scheduled jobs are not running. Periodic tasks such as backups, reports, or reconciliation are being skipped.',
+    recommendedActions: [
+      'Confirm maintenance is complete, then resume: `kubectl -n ' + cronJob.namespace + ' patch cronjob ' + cronJob.name + ' -p \'{"spec":{"suspend":false}}\'`',
+      'Verify no in-flight jobs are running before resuming to avoid duplicate execution.',
+    ],
+    automation: [readCommand(`kubectl -n ${cronJob.namespace} describe cronjob ${cronJob.name}`, 'Inspect CronJob status and history')],
   };
 }
 

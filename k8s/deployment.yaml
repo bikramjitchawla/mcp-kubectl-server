@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-diagnostics
+  namespace: mcp-diagnostics
+  labels:
+    app: mcp-diagnostics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-diagnostics
+  template:
+    metadata:
+      labels:
+        app: mcp-diagnostics
+    spec:
+      serviceAccountName: mcp-diagnostics
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+      containers:
+        - name: app
+          # Build and push with:
+          #   docker build -t localhost:5001/mcp-diagnostics:latest .
+          #   docker push localhost:5001/mcp-diagnostics:latest
+          image: localhost:5001/mcp-diagnostics:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: NODE_ENV
+              value: production
+            # Optional: set MCP_API_KEY to require auth on all /api/* endpoints.
+            # When unset, the API is open (suitable for in-cluster-only access).
+            - name: MCP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mcp-diagnostics-secrets
+                  key: api-key
+                  optional: true
+            # Optional: enable AI narrative generation.
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mcp-diagnostics-secrets
+                  key: openai-api-key
+                  optional: true
+            - name: OPENAI_MODEL
+              value: gpt-4o-mini
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /api/mcp
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/mcp
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-diagnostics
+  namespace: mcp-diagnostics
+spec:
+  selector:
+    app: mcp-diagnostics
+  ports:
+    - port: 80
+      targetPort: 3000
+      name: http

@@ -16,7 +16,10 @@ const diagnosticScopeSchema = z.object({
   tailLines: z.coerce.number().int().min(20).max(500).default(120),
   maxPods: z.coerce.number().int().min(1).max(200).default(60),
   includeClusterResources: z.coerce.boolean().default(false),
+  includeNodes: z.coerce.boolean().default(true),
+  includeHpa: z.coerce.boolean().default(true),
   enableAiSummary: z.coerce.boolean().default(true),
+  context: z.string().trim().min(1).max(128).optional(),
 });
 
 const outputExpectationSchema = z.object({

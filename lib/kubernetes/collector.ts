@@ -5,11 +5,14 @@ import {
   ContainerLogSnapshot,
   ContainerSnapshot,
   ContainerStateSnapshot,
+  CronJobSnapshot,
   DiagnosticScope,
   EventSnapshot,
-  KubernetesResourceRef,
+  HPASnapshot,
   KubernetesSnapshot,
+  NodeSnapshot,
   PodSnapshot,
+  PVCSnapshot,
   ServiceSnapshot,
   WorkloadSnapshot,
 } from '@/types/mcp';
@@ -24,24 +27,40 @@ export class KubernetesDiagnosticCollector {
   private readonly coreApi: k8s.CoreV1Api;
   private readonly appsApi: k8s.AppsV1Api;
   private readonly batchApi: k8s.BatchV1Api;
+  private readonly autoscalingApi: k8s.AutoscalingV2Api;
 
-  constructor() {
+  constructor(context?: string) {
     this.kubeConfig = new k8s.KubeConfig();
 
     if (process.env.KUBERNETES_SERVICE_HOST) {
       this.kubeConfig.loadFromCluster();
     } else {
       this.kubeConfig.loadFromDefault();
+      if (context) {
+        this.kubeConfig.currentContext = context;
+      }
     }
 
     this.coreApi = this.kubeConfig.makeApiClient(k8s.CoreV1Api);
     this.appsApi = this.kubeConfig.makeApiClient(k8s.AppsV1Api);
     this.batchApi = this.kubeConfig.makeApiClient(k8s.BatchV1Api);
+    this.autoscalingApi = this.kubeConfig.makeApiClient(k8s.AutoscalingV2Api);
   }
 
   async collect(scope: DiagnosticScope): Promise<KubernetesSnapshot> {
     const accessErrors: AccessError[] = [];
-    const [pods, events, services, endpoints, deployments, statefulSets, daemonSets, replicaSets, jobs] =
+
+    const nodeListPromise: Promise<ListResult<k8s.V1Node>> = scope.includeNodes
+      ? this.safeList('list nodes', () => this.coreApi.listNode())
+      : Promise.resolve({ items: [] });
+
+    const hpaListPromise: Promise<ListResult<k8s.V2HorizontalPodAutoscaler>> = scope.includeHpa
+      ? this.safeList('list hpas', () =>
+          this.autoscalingApi.listNamespacedHorizontalPodAutoscaler({ namespace: scope.namespace }),
+        )
+      : Promise.resolve({ items: [] });
+
+    const [pods, events, services, endpoints, deployments, statefulSets, daemonSets, replicaSets, jobs, pvcs, cronJobs, nodes, hpas] =
       await Promise.all([
         this.safeList('list pods', () =>
           this.coreApi.listNamespacedPod({ namespace: scope.namespace, labelSelector: scope.labelSelector }),
@@ -64,9 +83,17 @@ export class KubernetesDiagnosticCollector {
         this.safeList('list jobs', () =>
           this.batchApi.listNamespacedJob({ namespace: scope.namespace, labelSelector: scope.labelSelector }),
         ),
+        this.safeList('list pvcs', () =>
+          this.coreApi.listNamespacedPersistentVolumeClaim({ namespace: scope.namespace }),
+        ),
+        this.safeList('list cronjobs', () =>
+          this.batchApi.listNamespacedCronJob({ namespace: scope.namespace }),
+        ),
+        nodeListPromise,
+        hpaListPromise,
       ]);
 
-    for (const result of [pods, events, services, endpoints, deployments, statefulSets, daemonSets, replicaSets, jobs]) {
+    for (const result of [pods, events, services, endpoints, deployments, statefulSets, daemonSets, replicaSets, jobs, pvcs, cronJobs, nodes, hpas]) {
       if (result.error) {
         accessErrors.push(result.error);
       }
@@ -90,6 +117,10 @@ export class KubernetesDiagnosticCollector {
       services: services.items.map((service) => toServiceSnapshot(service, endpoints.items)),
       events: events.items.map(toEventSnapshot).sort(sortEventsRecentFirst).slice(0, 80),
       logs,
+      nodes: nodes.items.map(toNodeSnapshot),
+      hpas: hpas.items.map(toHPASnapshot),
+      pvcs: pvcs.items.map(toPVCSnapshot),
+      cronJobs: cronJobs.items.map(toCronJobSnapshot),
       accessErrors,
     };
   }
@@ -228,8 +259,8 @@ function toPodSnapshot(pod: k8s.V1Pod): PodSnapshot {
     labels: pod.metadata?.labels ?? {},
     ownerReferences: (pod.metadata?.ownerReferences ?? []).map((owner) => ({
       apiVersion: owner.apiVersion,
-      kind: owner.kind,
-      name: owner.name,
+      kind: owner.kind ?? 'Unknown',
+      name: owner.name ?? 'unknown',
       namespace: pod.metadata?.namespace,
     })),
     conditions: (pod.status?.conditions ?? []).map(toConditionSnapshot),
@@ -414,6 +445,76 @@ function toEventSnapshot(event: k8s.CoreV1Event): EventSnapshot {
       namespace: event.involvedObject.namespace,
       name: event.involvedObject.name ?? 'unknown',
     },
+  };
+}
+
+function toNodeSnapshot(node: k8s.V1Node): NodeSnapshot {
+  const labels = node.metadata?.labels ?? {};
+  const roles = Object.keys(labels)
+    .filter((key) => key.startsWith('node-role.kubernetes.io/'))
+    .map((key) => key.replace('node-role.kubernetes.io/', ''));
+
+  const readyCond = (node.status?.conditions ?? []).find((c) => c.type === 'Ready');
+
+  return {
+    name: node.metadata?.name ?? 'unknown',
+    ready: readyCond?.status === 'True',
+    roles: roles.length > 0 ? roles : ['worker'],
+    conditions: (node.status?.conditions ?? []).map(toConditionSnapshot),
+    taints: (node.spec?.taints ?? []).map((t) => ({
+      key: t.key ?? '',
+      effect: t.effect ?? '',
+      value: t.value,
+    })),
+    allocatable: normalizeResourceList(node.status?.allocatable as Record<string, string | number> | undefined),
+    capacity: normalizeResourceList(node.status?.capacity as Record<string, string | number> | undefined),
+    kubeletVersion: node.status?.nodeInfo?.kubeletVersion,
+    unschedulable: node.spec?.unschedulable ?? false,
+  };
+}
+
+function toHPASnapshot(hpa: k8s.V2HorizontalPodAutoscaler): HPASnapshot {
+  return {
+    name: hpa.metadata?.name ?? 'unknown',
+    namespace: hpa.metadata?.namespace ?? 'unknown',
+    targetKind: hpa.spec?.scaleTargetRef?.kind ?? 'Deployment',
+    targetName: hpa.spec?.scaleTargetRef?.name ?? 'unknown',
+    minReplicas: hpa.spec?.minReplicas ?? 1,
+    maxReplicas: hpa.spec?.maxReplicas ?? 1,
+    currentReplicas: hpa.status?.currentReplicas ?? 0,
+    desiredReplicas: hpa.status?.desiredReplicas ?? 0,
+    conditions: (hpa.status?.conditions ?? []).map((c) => ({
+      type: c.type,
+      status: c.status,
+      reason: c.reason,
+      message: c.message,
+      lastTransitionTime: c.lastTransitionTime?.toISOString(),
+    })),
+  };
+}
+
+function toPVCSnapshot(pvc: k8s.V1PersistentVolumeClaim): PVCSnapshot {
+  const capacity = pvc.status?.capacity?.['storage'];
+  return {
+    name: pvc.metadata?.name ?? 'unknown',
+    namespace: pvc.metadata?.namespace ?? 'unknown',
+    phase: pvc.status?.phase ?? 'Unknown',
+    storageClass: pvc.spec?.storageClassName,
+    capacity: capacity ? String(capacity) : undefined,
+    volumeName: pvc.spec?.volumeName,
+    accessModes: pvc.spec?.accessModes ?? [],
+  };
+}
+
+function toCronJobSnapshot(cronJob: k8s.V1CronJob): CronJobSnapshot {
+  return {
+    name: cronJob.metadata?.name ?? 'unknown',
+    namespace: cronJob.metadata?.namespace ?? 'unknown',
+    schedule: cronJob.spec?.schedule ?? '',
+    suspended: cronJob.spec?.suspend ?? false,
+    active: cronJob.status?.active?.length ?? 0,
+    lastScheduleTime: cronJob.status?.lastScheduleTime?.toISOString(),
+    lastSuccessfulTime: cronJob.status?.lastSuccessfulTime?.toISOString(),
   };
 }
 

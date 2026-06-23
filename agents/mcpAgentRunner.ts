@@ -3,20 +3,20 @@ import { analyzeKubernetesSnapshot } from '@/lib/diagnostics/analyzer';
 import { buildRunbook, buildSummary, formatMarkdownReport } from '@/lib/diagnostics/formatter';
 import { normalizeMcpRequest } from '@/lib/validation';
 import { KubernetesDiagnosticCollector } from '@/tools/kubectlTool';
+import { saveRun } from '@/lib/store/history';
 import { DiagnosticFinding, MCPRequest, MCPResponse } from '@/types/mcp';
 
 export class MCPAgentRunner {
-  private readonly collector: KubernetesDiagnosticCollector;
   private readonly openai?: OpenAI;
 
   constructor() {
-    this.collector = new KubernetesDiagnosticCollector();
     this.openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : undefined;
   }
 
   async run(mcp: MCPRequest): Promise<MCPResponse> {
     const request = normalizeMcpRequest(mcp);
-    const snapshot = await this.collector.collect(request.input_context);
+    const collector = new KubernetesDiagnosticCollector(request.input_context.context);
+    const snapshot = await collector.collect(request.input_context);
     const findings = analyzeKubernetesSnapshot(snapshot);
     const summary = buildSummary(request.input_context, snapshot, findings);
     const runbook = buildRunbook(findings);
@@ -31,7 +31,7 @@ export class MCPAgentRunner {
       report: deterministicReport,
     });
 
-    return {
+    const response: MCPResponse = {
       requestId: request.request_id,
       status: snapshot.accessErrors.length > 0 ? 'partial' : 'ok',
       generatedAt: new Date().toISOString(),
@@ -50,6 +50,9 @@ export class MCPAgentRunner {
         errors: snapshot.accessErrors,
       },
     };
+
+    saveRun(response);
+    return response;
   }
 
   private async generateAiNarrative(input: {

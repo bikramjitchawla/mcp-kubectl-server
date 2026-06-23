@@ -11,6 +11,8 @@ export function buildSummary(
     const ready = pod.conditions.find((condition) => condition.type === 'Ready');
     return pod.phase !== 'Running' || ready?.status === 'False' || pod.restartCount > 0;
   }).length;
+  const notReadyNodes = snapshot.nodes.filter((n) => !n.ready).length;
+  const pendingPvcs = snapshot.pvcs.filter((p) => p.phase !== 'Bound').length;
 
   return {
     health: criticalFindings > 0 ? 'critical' : highFindings > 0 || unhealthyPods > 0 ? 'degraded' : 'healthy',
@@ -20,6 +22,8 @@ export function buildSummary(
     warningEvents: snapshot.events.filter((event) => event.type === 'Warning').length,
     criticalFindings,
     highFindings,
+    notReadyNodes,
+    pendingPvcs,
     topRisks: findings
       .filter((finding) => finding.severity === 'critical' || finding.severity === 'high')
       .slice(0, 5)
@@ -55,9 +59,24 @@ export function formatMarkdownReport(
     `**Health:** ${summary.health}`,
     `**Pods:** ${summary.totalPods} collected, ${summary.unhealthyPods} unhealthy`,
     `**Warning events:** ${summary.warningEvents}`,
-    '',
-    `## Top Findings`,
   ];
+
+  if (snapshot.nodes.length > 0) {
+    lines.push(`**Nodes:** ${snapshot.nodes.length} total, ${summary.notReadyNodes} not ready`);
+  }
+  if (snapshot.pvcs.length > 0) {
+    lines.push(`**PVCs:** ${snapshot.pvcs.length} total, ${summary.pendingPvcs} not bound`);
+  }
+  if (snapshot.hpas.length > 0) {
+    const maxed = snapshot.hpas.filter((h) => h.currentReplicas >= h.maxReplicas && h.maxReplicas > 0).length;
+    lines.push(`**HPAs:** ${snapshot.hpas.length} total, ${maxed} at max replicas`);
+  }
+  if (snapshot.cronJobs.length > 0) {
+    const suspended = snapshot.cronJobs.filter((c) => c.suspended).length;
+    lines.push(`**CronJobs:** ${snapshot.cronJobs.length} total, ${suspended} suspended`);
+  }
+
+  lines.push('', `## Top Findings`);
 
   for (const finding of findings.slice(0, 8)) {
     lines.push(
