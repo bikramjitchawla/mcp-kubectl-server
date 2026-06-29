@@ -1,11 +1,15 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Activity, Bot, ChevronDown, ClipboardList, Clock, Loader2, Search, Server, ShieldCheck, Terminal } from 'lucide-react';
-import { HistoryEntry } from '@/lib/store/history';
-import { MCPResponse } from '@/types/mcp';
+import type { HistoryEntry } from '@/lib/store/history';
+import type { DiagnosticScope, MCPResponse } from '@/types/mcp';
+import type { ClarificationOptions, NLQParseResponse } from '@/lib/nlq/types';
 
 const defaultGoal = 'Diagnose failing workloads and produce an incident-ready remediation plan.';
+type InputMode = 'form' | 'query';
 
 export default function HomePage() {
   const [namespace, setNamespace] = useState('default');
@@ -24,10 +28,18 @@ export default function HomePage() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [inputMode, setInputMode] = useState<InputMode>('form');
+  const [query, setQuery] = useState('');
+  const [queryModeAvailable, setQueryModeAvailable] = useState(false);
+  const [queryModeChecked, setQueryModeChecked] = useState(false);
+  const [queryParsing, setQueryParsing] = useState(false);
+  const [queryError, setQueryError] = useState('');
+  const [nlqResponse, setNlqResponse] = useState<NLQParseResponse | null>(null);
+  const [resolvedQueryContext, setResolvedQueryContext] = useState<DiagnosticScope | null>(null);
 
-  const fetchWorkloads = (ns: string) => {
+  const fetchWorkloads = (ns: string, resetSelection = true) => {
     setWorkloadsLoading(true);
-    setWorkload('');
+    if (resetSelection) setWorkload('');
     fetch(`/api/workloads?namespace=${encodeURIComponent(ns)}`)
       .then((r) => r.json())
       .then((data) => setWorkloads(data.workloads ?? []))
@@ -59,6 +71,16 @@ export default function HomePage() {
       .then((r) => r.json())
       .then((data) => setHistory(data.runs ?? []))
       .catch(() => {});
+
+    fetch('/api/nlq/parse')
+      .then((r) => r.json())
+      .then((data) => {
+        setQueryModeAvailable(Boolean(data.enabled));
+        const storedMode = window.localStorage.getItem('diagnostic-input-mode');
+        if (storedMode === 'query' && data.enabled) setInputMode('query');
+      })
+      .catch(() => setQueryModeAvailable(false))
+      .finally(() => setQueryModeChecked(true));
   }, []);
 
   const handleNamespaceChange = (ns: string) => {
@@ -66,27 +88,103 @@ export default function HomePage() {
     fetchWorkloads(ns);
   };
 
-  const runDiagnosis = async () => {
+  const setMode = (mode: InputMode) => {
+    if (mode === 'query' && !queryModeAvailable) return;
+    setInputMode(mode);
+    window.localStorage.setItem('diagnostic-input-mode', mode);
+  };
+
+  const applyResolvedContext = (scope: DiagnosticScope) => {
+    setNamespace(scope.namespace);
+    fetchWorkloads(scope.namespace, false);
+    setWorkload(scope.workload ?? '');
+    setLabelSelector(scope.labelSelector ?? '');
+    setIncludeLogs(scope.includeLogs);
+    setIncludeNodes(scope.includeNodes);
+    setEnableAiSummary(scope.enableAiSummary);
+  };
+
+  const parseQuery = async () => {
+    setQueryParsing(true);
+    setQueryError('');
+    setNlqResponse(null);
+    setResolvedQueryContext(null);
+
+    try {
+      const response = await fetch('/api/nlq/parse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, context: context || undefined }),
+      });
+      const data: NLQParseResponse = await response.json();
+      if (!response.ok || data.error) {
+        setQueryError(data.error ?? 'Could not interpret the query');
+        return;
+      }
+
+      setNlqResponse(data);
+      if (data.resolvedContext) {
+        setResolvedQueryContext(data.resolvedContext);
+        applyResolvedContext(data.resolvedContext);
+      }
+    } catch {
+      setQueryError('Natural language parsing failed. Retry or switch to form mode.');
+    } finally {
+      setQueryParsing(false);
+    }
+  };
+
+  const chooseClarification = (scope: DiagnosticScope) => {
+    setResolvedQueryContext(scope);
+    applyResolvedContext(scope);
+    setQueryError('');
+    setNlqResponse((current) =>
+      current
+        ? {
+            ...current,
+            resolvedContext: scope,
+            requiresConfirmation: true,
+            confirmationPrompt: 'Review the interpreted diagnostic scope before running.',
+            clarificationOptions: undefined,
+          }
+        : current,
+    );
+  };
+
+  const editResolvedContext = () => {
+    if (resolvedQueryContext) applyResolvedContext(resolvedQueryContext);
+    setMode('form');
+  };
+
+  const runDiagnosis = async (scopeOverride?: DiagnosticScope) => {
     setLoading(true);
     setError('');
     setResult(null);
+    const scope = scopeOverride
+      ? {
+          ...scopeOverride,
+          includeLogs,
+          includeNodes,
+          enableAiSummary,
+        }
+      : {
+          namespace,
+          context: context || undefined,
+          labelSelector: labelSelector || undefined,
+          workload: workload || undefined,
+          includeLogs,
+          enableAiSummary,
+          includeNodes,
+          includeHpa: true,
+          tailLines: 120,
+          maxPods: 60,
+        };
 
     const body = {
       agent: 'kubernetes-diagnoser',
       goal,
       tools: ['kubernetes-api', 'events', 'logs', 'runbook-generator'],
-      input_context: {
-        namespace,
-        context: context || undefined,
-        labelSelector: labelSelector || undefined,
-        workload: workload || undefined,
-        includeLogs,
-        enableAiSummary,
-        includeNodes,
-        includeHpa: true,
-        tailLines: 120,
-        maxPods: 60,
-      },
+      input_context: scope,
       output_expectation: {
         format: 'markdown',
         includes: ['root cause', 'evidence', 'remediation', 'automation commands'],
@@ -142,62 +240,109 @@ export default function HomePage() {
             </div>
           )}
 
-          <div className="field">
-            <label htmlFor="namespace">Namespace</label>
-            {namespaces.length > 0 ? (
-              <div className="select-wrap">
-                <select id="namespace" value={namespace} onChange={(e) => handleNamespaceChange(e.target.value)}>
-                  {namespaces.map((ns) => (
-                    <option key={ns} value={ns}>{ns}</option>
-                  ))}
-                </select>
-                <ChevronDown size={14} />
+          <div className="mode-toggle" aria-label="input mode">
+            <button className={inputMode === 'form' ? 'active' : ''} onClick={() => setMode('form')} type="button">
+              Form
+            </button>
+            <button
+              className={inputMode === 'query' ? 'active' : ''}
+              onClick={() => setMode('query')}
+              disabled={!queryModeAvailable}
+              title={!queryModeAvailable && queryModeChecked ? 'Requires GROQ_API_KEY or OPENAI_API_KEY' : undefined}
+              type="button"
+            >
+              Query
+            </button>
+          </div>
+
+          {inputMode === 'form' ? (
+            <>
+              <div className="field">
+                <label htmlFor="namespace">Namespace</label>
+                {namespaces.length > 0 ? (
+                  <div className="select-wrap">
+                    <select id="namespace" value={namespace} onChange={(e) => handleNamespaceChange(e.target.value)}>
+                      {namespaces.map((ns) => (
+                        <option key={ns} value={ns}>{ns}</option>
+                      ))}
+                    </select>
+                    <ChevronDown size={14} />
+                  </div>
+                ) : (
+                  <input id="namespace" value={namespace} onChange={(e) => handleNamespaceChange(e.target.value)} placeholder="default" />
+                )}
               </div>
-            ) : (
-              <input id="namespace" value={namespace} onChange={(e) => handleNamespaceChange(e.target.value)} placeholder="default" />
-            )}
-          </div>
 
-          <div className="field">
-            <label htmlFor="workload">
-              Workload filter {workloadsLoading && <Loader2 size={12} className="spin-inline" />}
-            </label>
-            {workloads.length > 0 ? (
-              <div className="select-wrap">
-                <select id="workload" value={workload} onChange={(e) => setWorkload(e.target.value)}>
-                  <option value="">All workloads</option>
-                  {workloads.map((w) => (
-                    <option key={`${w.kind}/${w.name}`} value={w.name}>
-                      {w.name} ({w.kind})
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown size={14} />
+              <div className="field">
+                <label htmlFor="workload">
+                  Workload filter {workloadsLoading && <Loader2 size={12} className="spin-inline" />}
+                </label>
+                {workloads.length > 0 ? (
+                  <div className="select-wrap">
+                    <select id="workload" value={workload} onChange={(e) => setWorkload(e.target.value)}>
+                      <option value="">All workloads</option>
+                      {workloads.map((w) => (
+                        <option key={`${w.kind}/${w.name}`} value={w.name}>
+                          {w.name} ({w.kind})
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={14} />
+                  </div>
+                ) : (
+                  <input
+                    id="workload"
+                    placeholder="api, checkout, worker"
+                    value={workload}
+                    onChange={(e) => setWorkload(e.target.value)}
+                  />
+                )}
               </div>
-            ) : (
-              <input
-                id="workload"
-                placeholder="api, checkout, worker"
-                value={workload}
-                onChange={(e) => setWorkload(e.target.value)}
-              />
-            )}
-          </div>
 
-          <div className="field">
-            <label htmlFor="labels">Label selector</label>
-            <input
-              id="labels"
-              placeholder="app=checkout,tier=backend"
-              value={labelSelector}
-              onChange={(event) => setLabelSelector(event.target.value)}
-            />
-          </div>
+              <div className="field">
+                <label htmlFor="labels">Label selector</label>
+                <input
+                  id="labels"
+                  placeholder="app=checkout,tier=backend"
+                  value={labelSelector}
+                  onChange={(event) => setLabelSelector(event.target.value)}
+                />
+              </div>
 
-          <div className="field">
-            <label htmlFor="goal">Incident goal</label>
-            <textarea id="goal" value={goal} onChange={(event) => setGoal(event.target.value)} />
-          </div>
+              <div className="field">
+                <label htmlFor="goal">Incident goal</label>
+                <textarea id="goal" value={goal} onChange={(event) => setGoal(event.target.value)} />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="field">
+                <label htmlFor="query">Describe the incident</label>
+                <textarea
+                  id="query"
+                  maxLength={500}
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="checkout pods keep crashing since last deploy"
+                />
+              </div>
+
+              {queryError ? <div className="error">{queryError}</div> : null}
+              {nlqResponse?.clarificationOptions ? (
+                <ClarificationPanel options={nlqResponse.clarificationOptions} onChoose={chooseClarification} />
+              ) : null}
+              {resolvedQueryContext ? (
+                <ResolvedContextPanel
+                  scope={resolvedQueryContext}
+                  focus={nlqResponse?.intent?.focus ?? []}
+                  prompt={nlqResponse?.confirmationPrompt}
+                  onConfirm={() => runDiagnosis(resolvedQueryContext)}
+                  onEdit={editResolvedContext}
+                  loading={loading}
+                />
+              ) : null}
+            </>
+          )}
 
           <div className="toggles">
             <label className="toggle">
@@ -218,10 +363,17 @@ export default function HomePage() {
             </label>
           </div>
 
-          <button className="primary-button" onClick={runDiagnosis} disabled={loading}>
-            {loading ? <Loader2 size={18} /> : <Search size={18} />}
-            {loading ? 'Running diagnostics' : 'Run diagnostics'}
-          </button>
+          {inputMode === 'form' ? (
+            <button className="primary-button" onClick={() => runDiagnosis()} disabled={loading}>
+              {loading ? <Loader2 size={18} /> : <Search size={18} />}
+              {loading ? 'Running diagnostics' : 'Run diagnostics'}
+            </button>
+          ) : (
+            <button className="primary-button" onClick={parseQuery} disabled={queryParsing || !query.trim() || !queryModeAvailable}>
+              {queryParsing ? <Loader2 size={18} /> : <Search size={18} />}
+              {queryParsing ? 'Interpreting query' : 'Interpret query'}
+            </button>
+          )}
         </div>
 
         <p className="meta">
@@ -317,7 +469,9 @@ export default function HomePage() {
 
             <section className="panel">
               <h3>Report</h3>
-              <pre className="report">{result.output}</pre>
+              <div className="report-md">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.output}</ReactMarkdown>
+              </div>
             </section>
           </>
         ) : (
@@ -340,6 +494,76 @@ function Metric({ label, value, icon }: { label: string; value: string; icon: Re
         {icon} {label}
       </span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ClarificationPanel({
+  options,
+  onChoose,
+}: {
+  options: ClarificationOptions;
+  onChoose: (scope: DiagnosticScope) => void;
+}) {
+  return (
+    <div className="inline-panel">
+      <p>{options.prompt}</p>
+      <div className="choice-list">
+        {options.options.map((option) => (
+          <button key={`${options.field}-${option.value}`} type="button" onClick={() => onChoose(option.resolvedContext)}>
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ResolvedContextPanel({
+  scope,
+  focus,
+  prompt,
+  onConfirm,
+  onEdit,
+  loading,
+}: {
+  scope: DiagnosticScope;
+  focus: string[];
+  prompt?: string | null;
+  onConfirm: () => void;
+  onEdit: () => void;
+  loading: boolean;
+}) {
+  return (
+    <div className="inline-panel">
+      {prompt ? <p>{prompt}</p> : null}
+      <dl className="resolved-grid">
+        <div>
+          <dt>Namespace</dt>
+          <dd>{scope.namespace}</dd>
+        </div>
+        <div>
+          <dt>Workload</dt>
+          <dd>{scope.workload ?? 'All workloads'}</dd>
+        </div>
+        <div>
+          <dt>Focus</dt>
+          <dd>{focus.length > 0 ? focus.join(', ') : 'pods'}</dd>
+        </div>
+        <div>
+          <dt>Logs</dt>
+          <dd>{scope.includeLogs ? 'yes' : 'no'}</dd>
+        </div>
+      </dl>
+      <div className="inline-actions">
+        <button className="primary-button" type="button" onClick={onConfirm} disabled={loading}>
+          {loading ? <Loader2 size={16} /> : <Search size={16} />}
+          {loading ? 'Running diagnostics' : 'Confirm'}
+        </button>
+        <button className="secondary-button" type="button" onClick={onEdit}>
+          Edit
+        </button>
+      </div>
     </div>
   );
 }

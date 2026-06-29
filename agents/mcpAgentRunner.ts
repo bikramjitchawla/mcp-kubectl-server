@@ -1,33 +1,13 @@
-import OpenAI from 'openai';
 import { analyzeKubernetesSnapshot } from '@/lib/diagnostics/analyzer';
 import { buildRunbook, buildSummary, formatMarkdownReport } from '@/lib/diagnostics/formatter';
 import { normalizeMcpRequest } from '@/lib/validation';
 import { KubernetesDiagnosticCollector } from '@/tools/kubectlTool';
 import { saveRun } from '@/lib/store/history';
 import { DiagnosticFinding, MCPRequest, MCPResponse } from '@/types/mcp';
-
-function buildLlmClient(): { client: OpenAI; model: string } | undefined {
-  // Groq takes priority — same openai SDK, different baseURL
-  if (process.env.GROQ_API_KEY) {
-    return {
-      client: new OpenAI({
-        apiKey: process.env.GROQ_API_KEY,
-        baseURL: 'https://api.groq.com/openai/v1',
-      }),
-      model: process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile',
-    };
-  }
-  if (process.env.OPENAI_API_KEY) {
-    return {
-      client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
-      model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
-    };
-  }
-  return undefined;
-}
+import { buildLlmClient, LlmClient } from '@/lib/llm/client';
 
 export class MCPAgentRunner {
-  private readonly llm?: { client: OpenAI; model: string };
+  private readonly llm?: LlmClient;
 
   constructor() {
     this.llm = buildLlmClient();
