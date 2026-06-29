@@ -9,9 +9,9 @@ build:
       docker:
         dockerfile: Dockerfile
   local:
-    # push: false loads the image directly into the Kind cluster nodes via
-    # "kind load docker-image" without needing the local registry to be running.
-    push: false
+    # push: true sends the image to the local registry (localhost:5001) which
+    # Kind nodes pull from via the kind-registry mirror configured in cluster.yaml.
+    push: true
 
 manifests:
   rawYaml:

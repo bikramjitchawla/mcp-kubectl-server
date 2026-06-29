@@ -9,8 +9,11 @@ const defaultGoal = 'Diagnose failing workloads and produce an incident-ready re
 
 export default function HomePage() {
   const [namespace, setNamespace] = useState('default');
-  const [labelSelector, setLabelSelector] = useState('');
+  const [namespaces, setNamespaces] = useState<string[]>([]);
   const [workload, setWorkload] = useState('');
+  const [workloads, setWorkloads] = useState<{ name: string; kind: string }[]>([]);
+  const [workloadsLoading, setWorkloadsLoading] = useState(false);
+  const [labelSelector, setLabelSelector] = useState('');
   const [goal, setGoal] = useState(defaultGoal);
   const [includeLogs, setIncludeLogs] = useState(true);
   const [enableAiSummary, setEnableAiSummary] = useState(true);
@@ -22,6 +25,16 @@ export default function HomePage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+  const fetchWorkloads = (ns: string) => {
+    setWorkloadsLoading(true);
+    setWorkload('');
+    fetch(`/api/workloads?namespace=${encodeURIComponent(ns)}`)
+      .then((r) => r.json())
+      .then((data) => setWorkloads(data.workloads ?? []))
+      .catch(() => setWorkloads([]))
+      .finally(() => setWorkloadsLoading(false));
+  };
+
   useEffect(() => {
     fetch('/api/contexts')
       .then((r) => r.json())
@@ -31,11 +44,27 @@ export default function HomePage() {
       })
       .catch(() => {});
 
+    fetch('/api/namespaces')
+      .then((r) => r.json())
+      .then((data) => {
+        const list: string[] = data.namespaces ?? [];
+        setNamespaces(list);
+        const initial = list.includes('default') ? 'default' : (list[0] ?? 'default');
+        if (list.length > 0 && !list.includes(namespace)) setNamespace(initial);
+        fetchWorkloads(list.includes('default') ? 'default' : (list[0] ?? 'default'));
+      })
+      .catch(() => {});
+
     fetch('/api/history')
       .then((r) => r.json())
       .then((data) => setHistory(data.runs ?? []))
       .catch(() => {});
   }, []);
+
+  const handleNamespaceChange = (ns: string) => {
+    setNamespace(ns);
+    fetchWorkloads(ns);
+  };
 
   const runDiagnosis = async () => {
     setLoading(true);
@@ -115,18 +144,44 @@ export default function HomePage() {
 
           <div className="field">
             <label htmlFor="namespace">Namespace</label>
-            <input id="namespace" value={namespace} onChange={(event) => setNamespace(event.target.value)} />
+            {namespaces.length > 0 ? (
+              <div className="select-wrap">
+                <select id="namespace" value={namespace} onChange={(e) => handleNamespaceChange(e.target.value)}>
+                  {namespaces.map((ns) => (
+                    <option key={ns} value={ns}>{ns}</option>
+                  ))}
+                </select>
+                <ChevronDown size={14} />
+              </div>
+            ) : (
+              <input id="namespace" value={namespace} onChange={(e) => handleNamespaceChange(e.target.value)} placeholder="default" />
+            )}
           </div>
 
           <div className="field">
-            <label htmlFor="workload">Workload filter</label>
-            <input
-              id="workload"
-              placeholder="api, checkout, worker"
-              value={workload}
-              onChange={(event) => setWorkload(event.target.value)}
-            />
-            <p className="helper">Matches pod or owner names.</p>
+            <label htmlFor="workload">
+              Workload filter {workloadsLoading && <Loader2 size={12} className="spin-inline" />}
+            </label>
+            {workloads.length > 0 ? (
+              <div className="select-wrap">
+                <select id="workload" value={workload} onChange={(e) => setWorkload(e.target.value)}>
+                  <option value="">All workloads</option>
+                  {workloads.map((w) => (
+                    <option key={`${w.kind}/${w.name}`} value={w.name}>
+                      {w.name} ({w.kind})
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={14} />
+              </div>
+            ) : (
+              <input
+                id="workload"
+                placeholder="api, checkout, worker"
+                value={workload}
+                onChange={(e) => setWorkload(e.target.value)}
+              />
+            )}
           </div>
 
           <div className="field">

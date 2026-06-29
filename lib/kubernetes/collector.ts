@@ -431,14 +431,22 @@ function toServiceSnapshot(service: k8s.V1Service, endpoints: k8s.V1Endpoints[])
   };
 }
 
+// The Kubernetes JS client returns MicroTime fields (eventTime) as strings,
+// not Date objects. This helper handles both safely.
+function toIso(val: Date | string | undefined | null): string | undefined {
+  if (!val) return undefined;
+  if (typeof val === 'string') return val;
+  return val.toISOString();
+}
+
 function toEventSnapshot(event: k8s.CoreV1Event): EventSnapshot {
   return {
     type: event.type,
     reason: event.reason,
     message: event.message,
     count: event.count,
-    firstSeen: event.firstTimestamp?.toISOString(),
-    lastSeen: event.lastTimestamp?.toISOString() ?? event.eventTime?.toISOString(),
+    firstSeen: toIso(event.firstTimestamp),
+    lastSeen: toIso(event.lastTimestamp) ?? toIso(event.eventTime),
     involvedObject: {
       apiVersion: event.involvedObject.apiVersion,
       kind: event.involvedObject.kind ?? 'Unknown',

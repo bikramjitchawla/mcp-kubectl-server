@@ -1,5 +1,6 @@
 # TLS certificate issued by cert-manager using the self-signed ClusterIssuer.
-# Add to /etc/hosts:  127.0.0.1  k8s-diagnostic.local
+# Uses nip.io wildcard DNS — no /etc/hosts entry required.
+# Access at: https://mcp-diagnostics.127.0.0.1.nip.io
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -11,7 +12,7 @@ spec:
     name: selfsigned
     kind: ClusterIssuer
   dnsNames:
-    - k8s-diagnostic.local
+    - mcp-diagnostics.127.0.0.1.nip.io
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -19,17 +20,15 @@ metadata:
   name: mcp-diagnostics
   namespace: mcp-diagnostics
   annotations:
-    # Traefik is the default IngressClass in this cluster (isDefaultClass: true).
-    # The redirect from port 80 → 443 is handled by Traefik's entrypoint config.
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
 spec:
   tls:
     - hosts:
-        - k8s-diagnostic.local
+        - mcp-diagnostics.127.0.0.1.nip.io
       secretName: mcp-diagnostics-tls
   rules:
-    - host: k8s-diagnostic.local
+    - host: mcp-diagnostics.127.0.0.1.nip.io
       http:
         paths:
           - path: /

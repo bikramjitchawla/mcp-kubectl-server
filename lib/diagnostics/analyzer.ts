@@ -4,11 +4,14 @@ import {
   DiagnosticFinding,
   EventSnapshot,
   HPASnapshot,
+  ImpactAssessment,
+  ImpactScope,
   KubernetesResourceRef,
   KubernetesSnapshot,
   NodeSnapshot,
   PodSnapshot,
   PVCSnapshot,
+  RiskAssessment,
   Severity,
   WorkloadSnapshot,
 } from '@/types/mcp';
@@ -18,6 +21,7 @@ const crashReasons = new Set(['CrashLoopBackOff', 'Error']);
 const schedulingReasons = new Set(['FailedScheduling', 'Unschedulable']);
 const probeReasons = new Set(['Unhealthy', 'FailedPostStartHook', 'FailedPreStopHook']);
 const nodePressureConditions = ['MemoryPressure', 'DiskPressure', 'PIDPressure'] as const;
+const recoveredPodWarningStaleMs = 10 * 60 * 1000;
 
 export function analyzeKubernetesSnapshot(snapshot: KubernetesSnapshot): DiagnosticFinding[] {
   const findings: DiagnosticFinding[] = [];
@@ -57,6 +61,13 @@ export function analyzeKubernetesSnapshot(snapshot: KubernetesSnapshot): Diagnos
           readCommand(`kubectl -n ${service.namespace} describe service ${service.name}`, 'Inspect service selector and ports'),
           readCommand(`kubectl -n ${service.namespace} get endpoints ${service.name} -o wide`, 'Inspect resolved endpoints'),
         ],
+        impactAssessment: impact('service', [{ kind: 'Service', namespace: service.namespace, name: service.name }], true,
+          `Service ${service.name} is routing to zero ready endpoints; all traffic will fail.`),
+        riskAssessment: risk('high', 'high',
+          'All traffic routed through this service will fail until backing pods are ready.',
+          'service',
+          ['Service selector resolves to 0 ready endpoints', `Not-ready endpoint count: ${service.notReadyEndpoints}`]),
+        confidence: 'high',
       });
     }
   }
@@ -101,6 +112,13 @@ export function analyzeKubernetesSnapshot(snapshot: KubernetesSnapshot): Diagnos
         'Add includeLogs=true and check application-level symptoms.',
       ],
       automation: [readCommand(`kubectl -n ${snapshot.namespace} get all`, 'Review namespace resources')],
+      impactAssessment: impact('namespace', [{ kind: 'Namespace', name: snapshot.namespace }], false,
+        `No obvious failures detected in namespace ${snapshot.namespace}.`),
+      riskAssessment: risk('info', 'medium',
+        'No immediate risk detected; continue monitoring.',
+        'namespace',
+        ['No failing pods, workloads, services, or warning events detected']),
+      confidence: 'medium',
     });
   }
 
@@ -137,6 +155,13 @@ function analyzePod(snapshot: KubernetesSnapshot, pod: PodSnapshot): DiagnosticF
         readCommand(`kubectl -n ${pod.namespace} describe pod ${pod.name}`, 'Inspect scheduler events'),
         readCommand('kubectl describe nodes', 'Check node pressure, taints, and allocatable capacity'),
       ],
+      impactAssessment: impact('pod', [podRef(pod)], false,
+        `Pod ${pod.name} is stuck in Pending — no instance is running for this workload slot.`),
+      riskAssessment: risk('high', 'high',
+        'Pod remains Pending indefinitely, reducing available workload capacity.',
+        'pod',
+        [unscheduled?.message ?? schedulingEvent?.message ?? 'Unschedulable condition detected'].filter(Boolean)),
+      confidence: 'high',
     });
   }
 
@@ -165,13 +190,21 @@ function analyzePod(snapshot: KubernetesSnapshot, pod: PodSnapshot): DiagnosticF
           readCommand(`kubectl -n ${pod.namespace} describe pod ${pod.name}`, 'Inspect image pull events'),
           readCommand(`kubectl -n ${pod.namespace} get secrets`, 'Check image pull secrets are present'),
         ],
+        impactAssessment: impact('pod', [podRef(pod)], false,
+          `Container ${container.name} cannot pull image ${container.image} and will never start.`),
+        riskAssessment: risk('high', 'high',
+          'Pod will never start until the image reference or registry credentials are fixed.',
+          'pod',
+          [`Image pull failed: ${reason}`, `Image: ${container.image}`]),
+        confidence: 'high',
       });
     }
 
     if (reason && crashReasons.has(reason)) {
+      const sev: Severity = container.restartCount > 5 ? 'critical' : 'high';
       findings.push({
         id: `pod-${pod.namespace}-${pod.name}-${container.name}-crashloop`,
-        severity: container.restartCount > 5 ? 'critical' : 'high',
+        severity: sev,
         category: 'runtime',
         title: `Container ${container.name} is restarting`,
         resource: podRef(pod),
@@ -197,6 +230,15 @@ function analyzePod(snapshot: KubernetesSnapshot, pod: PodSnapshot): DiagnosticF
           ),
           readCommand(`kubectl -n ${pod.namespace} describe pod ${pod.name}`, 'Inspect restart events and probes'),
         ],
+        impactAssessment: impact('pod', [podRef(pod)], false,
+          `Container ${container.name} is crash-looping (${container.restartCount} restarts); capacity is reduced.`),
+        riskAssessment: risk(sev, 'high',
+          container.restartCount > 5
+            ? 'Container has restarted more than 5 times and is in exponential back-off; recovery is blocked until the root cause is fixed.'
+            : 'Pod is cycling through crash-restart loops; service capacity is degraded.',
+          'pod',
+          [`Crash reason: ${reason}`, `Restart count: ${container.restartCount}`]),
+        confidence: 'high',
       });
     }
 
@@ -224,6 +266,13 @@ function analyzePod(snapshot: KubernetesSnapshot, pod: PodSnapshot): DiagnosticF
           readCommand(`kubectl -n ${pod.namespace} top pod ${pod.name} --containers`, 'Check live container memory usage'),
           readCommand(`kubectl -n ${pod.namespace} describe pod ${pod.name}`, 'Inspect termination reason and limits'),
         ],
+        impactAssessment: impact('pod', [podRef(pod)], false,
+          `Container ${container.name} was killed by the kernel for exceeding its memory limit.`),
+        riskAssessment: risk('high', 'high',
+          'Container will keep being OOMKilled unless memory limits are raised or the application memory growth is fixed.',
+          'pod',
+          [`Memory limit: ${JSON.stringify(container.limits)}`, `Restart count: ${container.restartCount}`]),
+        confidence: 'high',
       });
     }
   }
@@ -249,6 +298,13 @@ function analyzePod(snapshot: KubernetesSnapshot, pod: PodSnapshot): DiagnosticF
         readCommand(`kubectl -n ${pod.namespace} describe pod ${pod.name}`, 'Inspect probe failure events'),
         readCommand(`kubectl -n ${pod.namespace} get pod ${pod.name} -o yaml`, 'Review probe configuration'),
       ],
+      impactAssessment: impact('pod', [podRef(pod)], false,
+        `Pod ${pod.name} is excluded from service traffic because its readiness check is failing.`),
+      riskAssessment: risk('medium', 'medium',
+        'Pod is excluded from service load balancing; other healthy pods absorb the traffic until this is resolved.',
+        'pod',
+        [probeEvent.reason ?? 'Readiness probe failing', notReady.message ?? 'Ready=False'].filter(Boolean)),
+      confidence: 'medium',
     });
   }
 
@@ -263,11 +319,12 @@ function analyzeWorkload(workload: WorkloadSnapshot): DiagnosticFinding | undefi
     return undefined;
   }
 
-  const severity: Severity = workload.ready === 0 || failedJob ? 'high' : 'medium';
+  const sev: Severity = workload.ready === 0 || failedJob ? 'high' : 'medium';
+  const unavailableCount = workload.desired - workload.ready;
 
   return {
     id: `workload-${workload.namespace}-${workload.kind.toLowerCase()}-${workload.name}-unavailable`,
-    severity,
+    severity: sev,
     category: failedJob ? 'runtime' : 'availability',
     title: `${workload.kind} ${workload.name} is not at desired state`,
     resource: {
@@ -294,6 +351,24 @@ function analyzeWorkload(workload: WorkloadSnapshot): DiagnosticFinding | undefi
       ),
       readCommand(`kubectl -n ${workload.namespace} get pods -o wide`, 'Correlate controller with child pods'),
     ],
+    impactAssessment: {
+      scope: 'workload',
+      affectedResources: [{ kind: workload.kind, namespace: workload.namespace, name: workload.name }],
+      affectedReplicas: {
+        desired: workload.desired,
+        ready: workload.ready,
+        unavailable: unavailableCount,
+      },
+      userFacing: false,
+      summary: `${workload.kind} ${workload.name} has ${unavailableCount} unavailable replica(s) out of ${workload.desired} desired.`,
+    },
+    riskAssessment: risk(sev, 'high',
+      workload.ready === 0
+        ? `${workload.kind} ${workload.name} has zero ready replicas; the workload is completely unavailable.`
+        : `${workload.kind} ${workload.name} is running at reduced capacity (${workload.ready}/${workload.desired} ready).`,
+      'workload',
+      [`desired=${workload.desired}`, `ready=${workload.ready}`, `unavailable=${unavailableCount}`]),
+    confidence: 'high',
   };
 }
 
@@ -324,6 +399,13 @@ function analyzeNode(node: NodeSnapshot): DiagnosticFinding[] {
         readCommand(`kubectl describe node ${node.name}`, 'Inspect node conditions and recent events'),
         readCommand(`kubectl get pods -A --field-selector spec.nodeName=${node.name}`, 'List all pods on this node'),
       ],
+      impactAssessment: impact('node', [{ kind: 'Node', name: node.name }], false,
+        `Node ${node.name} is NotReady; all pods scheduled on it are effectively unreachable.`),
+      riskAssessment: risk('critical', 'high',
+        'All pods on this node are unreachable and the scheduler will not place new workloads here; cluster capacity is reduced.',
+        'cluster',
+        [notReadyCond.reason ?? 'Ready=False', notReadyCond.message ?? ''].filter(Boolean)),
+      confidence: 'high',
     });
   }
 
@@ -350,6 +432,13 @@ function analyzeNode(node: NodeSnapshot): DiagnosticFinding[] {
           readCommand(`kubectl describe node ${node.name}`, 'Inspect allocatable and conditions'),
           readCommand(`kubectl top node ${node.name}`, 'Check live node resource usage'),
         ],
+        impactAssessment: impact('node', [{ kind: 'Node', name: node.name }], false,
+          `Node ${node.name} is under ${pressureType}; the kubelet may evict pods.`),
+        riskAssessment: risk('high', 'high',
+          `Node eviction will start if ${pressureType} is not relieved, disrupting workloads on this node.`,
+          'node',
+          [`${pressureType}=True`, cond.reason ?? '', cond.message ?? ''].filter(Boolean)),
+        confidence: 'high',
       });
     }
   }
@@ -369,6 +458,13 @@ function analyzeNode(node: NodeSnapshot): DiagnosticFinding[] {
         'Uncordon when ready: `kubectl uncordon ' + node.name + '`',
       ],
       automation: [readCommand(`kubectl describe node ${node.name}`, 'Inspect node status and taints')],
+      impactAssessment: impact('node', [{ kind: 'Node', name: node.name }], false,
+        `Node ${node.name} is cordoned; new pods will not be scheduled here.`),
+      riskAssessment: risk('medium', 'high',
+        'Cluster scheduling capacity is reduced; rescheduled pods from this node will not land here.',
+        'node',
+        ['Node is marked unschedulable (cordoned)']),
+      confidence: 'high',
     });
   }
 
@@ -407,12 +503,28 @@ function analyzeHPA(hpa: HPASnapshot): DiagnosticFinding | undefined {
         readCommand(`kubectl -n ${hpa.namespace} describe hpa ${hpa.name}`, 'Inspect HPA conditions and events'),
         readCommand(`kubectl -n ${hpa.namespace} get ${hpa.targetKind.toLowerCase()} ${hpa.targetName}`, 'Verify target workload'),
       ],
+      impactAssessment: {
+        scope: 'workload',
+        affectedResources: [
+          { kind: 'HorizontalPodAutoscaler', namespace: hpa.namespace, name: hpa.name },
+          { kind: hpa.targetKind, namespace: hpa.namespace, name: hpa.targetName },
+        ],
+        affectedReplicas: { desired: hpa.desiredReplicas, ready: hpa.currentReplicas, unavailable: Math.max(0, hpa.desiredReplicas - hpa.currentReplicas) },
+        userFacing: false,
+        summary: `HPA ${hpa.name} cannot scale ${hpa.targetKind}/${hpa.targetName}; autoscaling is broken.`,
+      },
+      riskAssessment: risk('high', 'high',
+        'Autoscaling is non-functional; the workload cannot scale to meet demand and may become overloaded.',
+        'workload',
+        ['AbleToScale=False', ...hpa.conditions.filter((c) => c.status !== 'True').map((c) => c.reason ?? c.type)]),
+      confidence: 'high',
     };
   }
 
+  const sev: Severity = scalingLimited ? 'high' : 'medium';
   return {
     id: `hpa-${hpa.namespace}-${hpa.name}-maxed`,
-    severity: scalingLimited ? 'high' : 'medium',
+    severity: sev,
     category: 'resource',
     title: `HPA ${hpa.name} is at maximum replicas (${hpa.maxReplicas})`,
     resource: { kind: 'HorizontalPodAutoscaler', namespace: hpa.namespace, name: hpa.name },
@@ -433,17 +545,32 @@ function analyzeHPA(hpa: HPASnapshot): DiagnosticFinding | undefined {
       readCommand(`kubectl -n ${hpa.namespace} describe hpa ${hpa.name}`, 'Inspect current metrics and conditions'),
       readCommand(`kubectl -n ${hpa.namespace} top pods`, 'Check resource usage of target pods'),
     ],
+    impactAssessment: {
+      scope: 'workload',
+      affectedResources: [
+        { kind: 'HorizontalPodAutoscaler', namespace: hpa.namespace, name: hpa.name },
+        { kind: hpa.targetKind, namespace: hpa.namespace, name: hpa.targetName },
+      ],
+      affectedReplicas: { desired: hpa.desiredReplicas, ready: hpa.currentReplicas, unavailable: Math.max(0, hpa.desiredReplicas - hpa.currentReplicas) },
+      userFacing: false,
+      summary: `HPA ${hpa.name} has reached its maximum of ${hpa.maxReplicas} replicas and cannot scale further.`,
+    },
+    riskAssessment: risk(sev, 'high',
+      'Workload cannot scale beyond current replicas; continued load growth will cause request failures.',
+      'workload',
+      [`currentReplicas=${hpa.currentReplicas} == maxReplicas=${hpa.maxReplicas}`, scalingLimited ? 'ScalingLimited=True' : ''].filter(Boolean)),
+    confidence: 'high',
   };
 }
 
 function analyzePVC(pvc: PVCSnapshot): DiagnosticFinding | undefined {
   if (pvc.phase === 'Bound') return undefined;
 
-  const severity: Severity = pvc.phase === 'Lost' ? 'critical' : 'high';
+  const sev: Severity = pvc.phase === 'Lost' ? 'critical' : 'high';
 
   return {
     id: `pvc-${pvc.namespace}-${pvc.name}-${pvc.phase.toLowerCase()}`,
-    severity,
+    severity: sev,
     category: 'storage',
     title: `PVC ${pvc.name} is ${pvc.phase}`,
     resource: { kind: 'PersistentVolumeClaim', namespace: pvc.namespace, name: pvc.name },
@@ -474,6 +601,17 @@ function analyzePVC(pvc: PVCSnapshot): DiagnosticFinding | undefined {
       readCommand(`kubectl -n ${pvc.namespace} describe pvc ${pvc.name}`, 'Inspect PVC binding conditions and events'),
       readCommand(`kubectl get pv`, 'List all PersistentVolumes and their claim bindings'),
     ],
+    impactAssessment: impact('namespace', [{ kind: 'PersistentVolumeClaim', namespace: pvc.namespace, name: pvc.name }], false,
+      pvc.phase === 'Lost'
+        ? `PVC ${pvc.name} has lost its backing volume; pods mounting it cannot start and data may be lost.`
+        : `PVC ${pvc.name} is Pending; pods that mount it will remain in Pending until the claim is bound.`),
+    riskAssessment: risk(sev, 'high',
+      pvc.phase === 'Lost'
+        ? 'Data on the lost volume may be irrecoverable; pods mounting this PVC will fail to start.'
+        : 'All pods that mount this PVC are blocked until a matching PersistentVolume is provisioned.',
+      'namespace',
+      [`PVC phase: ${pvc.phase}`, pvc.phase === 'Lost' ? `Backing PV ${pvc.volumeName ?? 'unknown'} is gone` : `StorageClass: ${pvc.storageClass ?? 'default'}`]),
+    confidence: 'high',
   };
 }
 
@@ -498,6 +636,13 @@ function analyzeCronJob(cronJob: CronJobSnapshot): DiagnosticFinding | undefined
       'Verify no in-flight jobs are running before resuming to avoid duplicate execution.',
     ],
     automation: [readCommand(`kubectl -n ${cronJob.namespace} describe cronjob ${cronJob.name}`, 'Inspect CronJob status and history')],
+    impactAssessment: impact('namespace', [{ kind: 'CronJob', namespace: cronJob.namespace, name: cronJob.name }], false,
+      `CronJob ${cronJob.name} is suspended; scheduled tasks (${cronJob.schedule}) are not running.`),
+    riskAssessment: risk('medium', 'high',
+      'Periodic work (backups, reports, reconciliation) is silently skipped until the CronJob is unsuspended.',
+      'namespace',
+      ['CronJob is suspended', `Schedule: ${cronJob.schedule}`, cronJob.lastScheduleTime ? `Last ran: ${cronJob.lastScheduleTime}` : 'Never ran']),
+    confidence: 'high',
   };
 }
 
@@ -520,6 +665,10 @@ function analyzeWarningEvents(snapshot: KubernetesSnapshot): DiagnosticFinding[]
       continue;
     }
 
+    if (isStaleRecoveredPodWarning(snapshot, event, events)) {
+      continue;
+    }
+
     findings.push({
       id: `event-${snapshot.namespace}-${event.involvedObject.kind}-${event.involvedObject.name}-${event.reason ?? 'warning'}`,
       severity: 'medium',
@@ -539,10 +688,74 @@ function analyzeWarningEvents(snapshot: KubernetesSnapshot): DiagnosticFinding[]
           'Inspect the resource that produced this warning',
         ),
       ],
+      impactAssessment: impact('unknown', [event.involvedObject], false,
+        `Warning event ${event.reason ?? 'Unknown'} on ${event.involvedObject.kind}/${event.involvedObject.name} — may indicate degraded behavior.`),
+      riskAssessment: risk('medium', 'low',
+        'Repeated warning events can precede failures; investigate before the pattern escalates.',
+        'unknown',
+        [event.message ?? `Warning: ${event.reason ?? 'Unknown'}`]),
+      confidence: 'low',
     });
   }
 
   return findings;
+}
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+function impact(
+  scope: ImpactScope,
+  affectedResources: KubernetesResourceRef[],
+  userFacing: boolean,
+  summary: string,
+): ImpactAssessment {
+  return { scope, affectedResources, userFacing, summary };
+}
+
+function risk(
+  level: Severity,
+  confidence: 'low' | 'medium' | 'high',
+  riskIfIgnored: string,
+  blastRadius: ImpactScope,
+  reasons: string[],
+): RiskAssessment {
+  return { level, confidence, riskIfIgnored, blastRadius, reasons: reasons.filter(Boolean) };
+}
+
+function isStaleRecoveredPodWarning(
+  snapshot: KubernetesSnapshot,
+  event: EventSnapshot,
+  events: EventSnapshot[],
+): boolean {
+  if (event.involvedObject.kind !== 'Pod') {
+    return false;
+  }
+
+  const pod = snapshot.pods.find(
+    (item) =>
+      item.name === event.involvedObject.name &&
+      (!event.involvedObject.namespace || item.namespace === event.involvedObject.namespace),
+  );
+  if (!pod || !isHealthyPod(pod)) {
+    return false;
+  }
+
+  const collectedAt = Date.parse(snapshot.collectedAt);
+  const latestEventAt = Math.max(...events.map(eventTimestamp).filter(Number.isFinite));
+  if (!Number.isFinite(collectedAt) || !Number.isFinite(latestEventAt)) {
+    return false;
+  }
+
+  return collectedAt - latestEventAt > recoveredPodWarningStaleMs;
+}
+
+function eventTimestamp(event: EventSnapshot): number {
+  return Date.parse(event.lastSeen ?? event.firstSeen ?? '');
+}
+
+function isHealthyPod(pod: PodSnapshot): boolean {
+  const ready = pod.conditions.find((condition) => condition.type === 'Ready');
+  return pod.phase === 'Running' && ready?.status === 'True' && pod.restartCount === 0 && pod.containers.every((container) => container.ready);
 }
 
 function inferCategory(event: EventSnapshot) {

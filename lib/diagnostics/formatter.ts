@@ -27,7 +27,7 @@ export function buildSummary(
     topRisks: findings
       .filter((finding) => finding.severity === 'critical' || finding.severity === 'high')
       .slice(0, 5)
-      .map((finding) => finding.title),
+      .map((finding) => `[${finding.severity.toUpperCase()}] ${finding.title}: ${finding.riskAssessment.riskIfIgnored}`),
   };
 }
 
@@ -89,6 +89,11 @@ export function formatMarkdownReport(
       ...finding.evidence.slice(0, 8).map((item) => `  - ${item}`),
       `- Recommended actions:`,
       ...finding.recommendedActions.map((item) => `  - ${item}`),
+    );
+
+    lines.push(
+      `- Risk: ${finding.riskAssessment.level} (confidence: ${finding.riskAssessment.confidence}) — blast radius: ${finding.impactAssessment.scope}`,
+      `- Risk if ignored: ${finding.riskAssessment.riskIfIgnored}`,
     );
 
     if (finding.automation.length > 0) {

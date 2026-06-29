@@ -18,5 +18,6 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: '/api/:path*',
+  // Exclude /api/health so liveness/readiness probes work without auth
+  matcher: '/api/((?!health$).*)',
 };

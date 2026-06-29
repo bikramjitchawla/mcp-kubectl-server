@@ -219,6 +219,36 @@ export interface AutomationCommand {
   requiresApproval: boolean;
 }
 
+export type ImpactScope =
+  | 'pod'
+  | 'workload'
+  | 'service'
+  | 'namespace'
+  | 'node'
+  | 'cluster'
+  | 'unknown';
+
+export interface ImpactAssessment {
+  scope: ImpactScope;
+  affectedResources: KubernetesResourceRef[];
+  affectedReplicas?: {
+    desired: number;
+    ready: number;
+    unavailable: number;
+  };
+  userFacing: boolean;
+  summary: string;
+}
+
+export interface RiskAssessment {
+  level: Severity;
+  confidence: 'low' | 'medium' | 'high';
+  riskIfIgnored: string;
+  riskIfRemediated?: string;
+  blastRadius: ImpactScope;
+  reasons: string[];
+}
+
 export interface DiagnosticFinding {
   id: string;
   severity: Severity;
@@ -227,9 +257,14 @@ export interface DiagnosticFinding {
   resource: KubernetesResourceRef;
   signal: string;
   evidence: string[];
+  /** @deprecated prefer impactAssessment.summary */
   impact: string;
   recommendedActions: string[];
   automation: AutomationCommand[];
+  impactAssessment: ImpactAssessment;
+  riskAssessment: RiskAssessment;
+  confidence?: 'low' | 'medium' | 'high';
+  relatedResources?: KubernetesResourceRef[];
 }
 
 export interface DiagnosisSummary {

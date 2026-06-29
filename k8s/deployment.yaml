@@ -14,6 +14,8 @@ spec:
     metadata:
       labels:
         app: mcp-diagnostics
+      annotations:
+        polaris.fairwinds.com/tagNotSpecified-exempt: "true"
     spec:
       serviceAccountName: mcp-diagnostics
       securityContext:
@@ -26,7 +28,9 @@ spec:
           #   docker build -t localhost:5001/mcp-diagnostics:latest .
           #   docker push localhost:5001/mcp-diagnostics:latest
           image: localhost:5001/mcp-diagnostics:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
           ports:
             - containerPort: 3000
               name: http
@@ -41,7 +45,17 @@ spec:
                   name: mcp-diagnostics-secrets
                   key: api-key
                   optional: true
-            # Optional: enable AI narrative generation.
+            # Optional: Groq API key — takes priority over OpenAI when set.
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mcp-diagnostics-secrets
+                  key: groq-api-key
+                  optional: true
+            # Default Groq model. Override to use a different Groq model.
+            - name: GROQ_MODEL
+              value: llama-3.3-70b-versatile
+            # Optional: OpenAI API key — used as fallback when GROQ_API_KEY is not set.
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -59,13 +73,13 @@ spec:
               memory: 512Mi
           readinessProbe:
             httpGet:
-              path: /api/mcp
+              path: /api/health
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /api/mcp
+              path: /api/health
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 30

@@ -6,11 +6,31 @@ import { KubernetesDiagnosticCollector } from '@/tools/kubectlTool';
 import { saveRun } from '@/lib/store/history';
 import { DiagnosticFinding, MCPRequest, MCPResponse } from '@/types/mcp';
 
+function buildLlmClient(): { client: OpenAI; model: string } | undefined {
+  // Groq takes priority — same openai SDK, different baseURL
+  if (process.env.GROQ_API_KEY) {
+    return {
+      client: new OpenAI({
+        apiKey: process.env.GROQ_API_KEY,
+        baseURL: 'https://api.groq.com/openai/v1',
+      }),
+      model: process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile',
+    };
+  }
+  if (process.env.OPENAI_API_KEY) {
+    return {
+      client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
+      model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
+    };
+  }
+  return undefined;
+}
+
 export class MCPAgentRunner {
-  private readonly openai?: OpenAI;
+  private readonly llm?: { client: OpenAI; model: string };
 
   constructor() {
-    this.openai = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : undefined;
+    this.llm = buildLlmClient();
   }
 
   async run(mcp: MCPRequest): Promise<MCPResponse> {
@@ -22,7 +42,7 @@ export class MCPAgentRunner {
     const runbook = buildRunbook(findings);
     const deterministicReport = formatMarkdownReport(summary, findings, snapshot, runbook);
 
-    const model = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
+    const model = this.llm?.model ?? '';
     const ai = await this.generateAiNarrative({
       enabled: request.input_context.enableAiSummary,
       model,
@@ -66,12 +86,12 @@ export class MCPAgentRunner {
       return { status: 'disabled' };
     }
 
-    if (!this.openai) {
+    if (!this.llm) {
       return { status: 'skipped' };
     }
 
     try {
-      const response = await this.openai.chat.completions.create({
+      const response = await this.llm.client.chat.completions.create({
         model: input.model,
         temperature: 0.2,
         messages: [
