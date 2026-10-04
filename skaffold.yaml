@@ -24,9 +24,28 @@ deploy:
   kubectl: {}
 
 # Expose the app at http://localhost:3000 while skaffold dev is running.
+# Only usable when APP_URL matches this origin; the ingress is the default path.
 portForward:
   - resourceType: service
     resourceName: mcp-diagnostics
     namespace: mcp-diagnostics
     port: 80
     localPort: 3000
+
+profiles:
+  # Local kind testing with a tenant API key: no OIDC provider, reached over the
+  # ingress at https://mcp-diagnostics.127.0.0.1.nip.io (which is what APP_URL
+  # is set to), so no port forward is involved.
+  # A profile's fields merge into the base, so the raw manifest list and the
+  # port forward are removed with patches rather than overridden.
+  - name: local
+    patches:
+      - op: remove
+        path: /manifests/rawYaml
+      - op: add
+        path: /manifests/kustomize
+        value:
+          paths:
+            - deploy/local/k8s
+      - op: remove
+        path: /portForward

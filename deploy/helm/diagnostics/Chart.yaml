@@ -1,0 +1,6 @@
+apiVersion: v2
+name: diagnostics
+version: 0.2.0
+appVersion: "0.2.0"
+description: Tenant-isolated Kubernetes diagnostics with OIDC sign-in
+type: application

@@ -1,13 +1,15 @@
+import { readJson } from '@/lib/http/json';
+import { AccessDenied } from '@/lib/tenancy/context';
+import { protectedRoute } from '@/lib/auth/guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { MCPAgentRunner } from '@/agents/mcpAgentRunner';
 import { formatValidationError } from '@/lib/validation';
-import { checkRateLimit } from '@/lib/ratelimit';
 import { ZodError } from 'zod';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+async function handleGET() {
   return NextResponse.json({
     name: 'kubernetes-diagnostic-mcp',
     status: 'ready',
@@ -22,34 +24,21 @@ export async function GET() {
       'read-only log collection',
       'deterministic root-cause findings',
       'optional OpenAI incident narrative',
-      'diagnostic run history',
+      'persistent diagnostic run history',
+      'snapshot configuration comparisons and optional metrics',
+      'evidence-based dependency incident groups',
+      'reviewed GitHub fix proposals and recovery verification',
     ],
   });
 }
 
-export async function POST(req: NextRequest) {
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? req.headers.get('x-real-ip') ?? 'unknown';
-  const rateLimit = checkRateLimit(ip);
-
-  if (!rateLimit.allowed) {
-    return NextResponse.json(
-      { error: 'Rate limit exceeded', retryAfter: Math.ceil((rateLimit.resetAt - Date.now()) / 1000) },
-      {
-        status: 429,
-        headers: {
-          'Retry-After': String(Math.ceil((rateLimit.resetAt - Date.now()) / 1000)),
-          'X-RateLimit-Remaining': '0',
-        },
-      },
-    );
-  }
-
+async function handlePOST(req: NextRequest) {
   const start = Date.now();
 
   try {
-    const mcpRequest = await req.json();
+    const mcpRequest = await readJson(req);
     const runner = new MCPAgentRunner();
-    const result = await runner.run(mcpRequest);
+    const result = await runner.run(mcpRequest, true);
 
     console.log(JSON.stringify({
       event: 'diagnostic_run',
@@ -65,16 +54,15 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result, {
       status: result.status === 'failed' ? 500 : 200,
-      headers: { 'X-RateLimit-Remaining': String(rateLimit.remaining) },
     });
   } catch (error) {
+    if (error instanceof AccessDenied || error instanceof SyntaxError) throw error;
     if (error instanceof ZodError) {
       return NextResponse.json({ error: 'Invalid MCP request', details: formatValidationError(error) }, { status: 400 });
     }
 
     console.error(JSON.stringify({
       event: 'diagnostic_error',
-      ip,
       durationMs: Date.now() - start,
       error: error instanceof Error ? error.message : String(error),
     }));
@@ -82,9 +70,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         error: 'Diagnostic run failed',
-        details: error instanceof Error ? error.message : String(error),
+        details: 'Check collection access and server logs.',
       },
       { status: 500 },
     );
   }
 }
+
+export const GET = protectedRoute('viewer', handleGET);
+
+export const POST = protectedRoute('operator', handlePOST);

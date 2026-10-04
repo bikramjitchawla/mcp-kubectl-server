@@ -1,3 +1,6 @@
+import { boundedApi, tenantKubeConfig } from './client';
+import { narrowSnapshot, selectOwnedPods } from './scope';
+import { createHash } from 'node:crypto';
 import * as k8s from '@kubernetes/client-node';
 import {
   AccessError,
@@ -30,21 +33,12 @@ export class KubernetesDiagnosticCollector {
   private readonly autoscalingApi: k8s.AutoscalingV2Api;
 
   constructor(context?: string) {
-    this.kubeConfig = new k8s.KubeConfig();
+    this.kubeConfig = tenantKubeConfig(context);
 
-    if (process.env.KUBERNETES_SERVICE_HOST) {
-      this.kubeConfig.loadFromCluster();
-    } else {
-      this.kubeConfig.loadFromDefault();
-      if (context) {
-        this.kubeConfig.currentContext = context;
-      }
-    }
-
-    this.coreApi = this.kubeConfig.makeApiClient(k8s.CoreV1Api);
-    this.appsApi = this.kubeConfig.makeApiClient(k8s.AppsV1Api);
-    this.batchApi = this.kubeConfig.makeApiClient(k8s.BatchV1Api);
-    this.autoscalingApi = this.kubeConfig.makeApiClient(k8s.AutoscalingV2Api);
+    this.coreApi = boundedApi(this.kubeConfig.makeApiClient(k8s.CoreV1Api));
+    this.appsApi = boundedApi(this.kubeConfig.makeApiClient(k8s.AppsV1Api));
+    this.batchApi = boundedApi(this.kubeConfig.makeApiClient(k8s.BatchV1Api));
+    this.autoscalingApi = boundedApi(this.kubeConfig.makeApiClient(k8s.AutoscalingV2Api));
   }
 
   async collect(scope: DiagnosticScope): Promise<KubernetesSnapshot> {
@@ -60,7 +54,7 @@ export class KubernetesDiagnosticCollector {
         )
       : Promise.resolve({ items: [] });
 
-    const [pods, events, services, endpoints, deployments, statefulSets, daemonSets, replicaSets, jobs, pvcs, cronJobs, nodes, hpas] =
+    const [pods, events, services, endpoints, deployments, statefulSets, daemonSets, replicaSets, jobs, pvcs, cronJobs, nodes, hpas, configMaps] =
       await Promise.all([
         this.safeList('list pods', () =>
           this.coreApi.listNamespacedPod({ namespace: scope.namespace, labelSelector: scope.labelSelector }),
@@ -69,19 +63,19 @@ export class KubernetesDiagnosticCollector {
         this.safeList('list services', () => this.coreApi.listNamespacedService({ namespace: scope.namespace })),
         this.safeList('list endpoints', () => this.coreApi.listNamespacedEndpoints({ namespace: scope.namespace })),
         this.safeList('list deployments', () =>
-          this.appsApi.listNamespacedDeployment({ namespace: scope.namespace, labelSelector: scope.labelSelector }),
+          this.appsApi.listNamespacedDeployment({ namespace: scope.namespace }),
         ),
         this.safeList('list statefulsets', () =>
-          this.appsApi.listNamespacedStatefulSet({ namespace: scope.namespace, labelSelector: scope.labelSelector }),
+          this.appsApi.listNamespacedStatefulSet({ namespace: scope.namespace }),
         ),
         this.safeList('list daemonsets', () =>
-          this.appsApi.listNamespacedDaemonSet({ namespace: scope.namespace, labelSelector: scope.labelSelector }),
+          this.appsApi.listNamespacedDaemonSet({ namespace: scope.namespace }),
         ),
         this.safeList('list replicasets', () =>
-          this.appsApi.listNamespacedReplicaSet({ namespace: scope.namespace, labelSelector: scope.labelSelector }),
+          this.appsApi.listNamespacedReplicaSet({ namespace: scope.namespace }),
         ),
         this.safeList('list jobs', () =>
-          this.batchApi.listNamespacedJob({ namespace: scope.namespace, labelSelector: scope.labelSelector }),
+          this.batchApi.listNamespacedJob({ namespace: scope.namespace }),
         ),
         this.safeList('list pvcs', () =>
           this.coreApi.listNamespacedPersistentVolumeClaim({ namespace: scope.namespace }),
@@ -91,18 +85,28 @@ export class KubernetesDiagnosticCollector {
         ),
         nodeListPromise,
         hpaListPromise,
+        this.safeList('list configmaps', () => this.coreApi.listNamespacedConfigMap({ namespace: scope.namespace })),
       ]);
 
-    for (const result of [pods, events, services, endpoints, deployments, statefulSets, daemonSets, replicaSets, jobs, pvcs, cronJobs, nodes, hpas]) {
+    for (const result of [pods, events, services, endpoints, deployments, statefulSets, daemonSets, replicaSets, jobs, pvcs, cronJobs, nodes, hpas, configMaps]) {
       if (result.error) {
         accessErrors.push(result.error);
       }
     }
 
-    const selectedPods = this.selectPodsForDiagnosis(pods.items, scope);
+    const controllers = [
+      ...deployments.items.map(w => ({ kind: 'Deployment', metadata: w.metadata })),
+      ...statefulSets.items.map(w => ({ kind: 'StatefulSet', metadata: w.metadata })),
+      ...daemonSets.items.map(w => ({ kind: 'DaemonSet', metadata: w.metadata })),
+      ...replicaSets.items.map(w => ({ kind: 'ReplicaSet', metadata: w.metadata })),
+      ...jobs.items.map(w => ({ kind: 'Job', metadata: w.metadata })),
+    ];
+    const eligiblePods = selectOwnedPods(pods.items, controllers, scope.workload);
+    const selectedPods = this.selectPodsForDiagnosis(eligiblePods, scope);
     const logs = scope.includeLogs ? await this.collectLogs(scope.namespace, selectedPods, scope.tailLines) : [];
+    for (const log of logs) if (log.error) accessErrors.push({ operation: `read logs ${log.pod}/${log.container}`, message: log.error });
 
-    return {
+    const snapshot = narrowSnapshot({
       namespace: scope.namespace,
       context: this.kubeConfig.getCurrentContext(),
       collectedAt: new Date().toISOString(),
@@ -115,39 +119,35 @@ export class KubernetesDiagnosticCollector {
         ...jobs.items.map(toJobSnapshot),
       ],
       services: services.items.map((service) => toServiceSnapshot(service, endpoints.items)),
-      events: events.items.map(toEventSnapshot).sort(sortEventsRecentFirst).slice(0, 80),
+      events: events.items.map(toEventSnapshot).sort(sortEventsRecentFirst),
       logs,
       nodes: nodes.items.map(toNodeSnapshot),
       hpas: hpas.items.map(toHPASnapshot),
       pvcs: pvcs.items.map(toPVCSnapshot),
       cronJobs: cronJobs.items.map(toCronJobSnapshot),
       accessErrors,
-    };
+      coverage: { podsTruncated: eligiblePods.length > selectedPods.length },
+      configMaps: configMaps.items.map(c => ({ name: c.metadata?.name ?? 'unknown', namespace: scope.namespace,
+        uid: c.metadata?.uid, digest: fingerprint({ data: c.data, binaryData: c.binaryData }) })),
+    }, scope);
+    snapshot.events = snapshot.events.slice(0, 80);
+    return snapshot;
   }
 
   private async safeList<T>(
     operation: string,
-    load: () => Promise<{ items?: T[] }>,
+    load: () => Promise<{ items?: T[]; metadata?: { _continue?: string } }>,
   ): Promise<ListResult<T>> {
     try {
       const response = await load();
-      return { items: response.items ?? [] };
+      return { items: response.items ?? [], error: response.metadata?._continue ? { operation, message: 'Resource limit reached; collection is incomplete.' } : undefined };
     } catch (error) {
       return { items: [], error: toAccessError(operation, error) };
     }
   }
 
   private selectPodsForDiagnosis(pods: k8s.V1Pod[], scope: DiagnosticScope): k8s.V1Pod[] {
-    const workload = scope.workload?.toLowerCase();
-    const filtered = workload
-      ? pods.filter((pod) => {
-          const name = pod.metadata?.name?.toLowerCase() ?? '';
-          const ownerMatch = pod.metadata?.ownerReferences?.some((owner) => owner.name?.toLowerCase().includes(workload));
-          return name.includes(workload) || ownerMatch;
-        })
-      : pods;
-
-    return filtered
+    return pods
       .sort((a, b) => Number(isInterestingPod(b)) - Number(isInterestingPod(a)))
       .slice(0, scope.maxPods);
   }
@@ -158,7 +158,7 @@ export class KubernetesDiagnosticCollector {
     tailLines: number,
   ): Promise<ContainerLogSnapshot[]> {
     const interestingPods = pods.filter(isInterestingPod).slice(0, 15);
-    const logs: ContainerLogSnapshot[] = [];
+    const tasks: Array<() => Promise<ContainerLogSnapshot>> = [];
 
     for (const pod of interestingPods) {
       const podName = pod.metadata?.name;
@@ -177,14 +177,20 @@ export class KubernetesDiagnosticCollector {
         );
         const shouldReadPrevious = Boolean(status?.restartCount && status.restartCount > 0);
 
-        logs.push(await this.readPodLog(namespace, podName, container.name, tailLines, false));
+        tasks.push(() => this.readPodLog(namespace, podName, container.name, tailLines, false));
 
         if (shouldReadPrevious) {
-          logs.push(await this.readPodLog(namespace, podName, container.name, tailLines, true));
+          tasks.push(() => this.readPodLog(namespace, podName, container.name, tailLines, true));
         }
       }
     }
 
+    const queue = tasks.slice(0, 60);
+    const logs: ContainerLogSnapshot[] = [];
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => {
+      while (next < queue.length) { const task = queue[next++]; logs.push(await task()); }
+    }));
     return logs;
   }
 
@@ -203,6 +209,7 @@ export class KubernetesDiagnosticCollector {
         tailLines,
         previous,
         timestamps: true,
+        limitBytes: 32768,
       });
 
       return {
@@ -252,6 +259,8 @@ function toPodSnapshot(pod: k8s.V1Pod): PodSnapshot {
     name: pod.metadata?.name ?? 'unknown',
     namespace: pod.metadata?.namespace ?? 'unknown',
     phase: pod.status?.phase ?? 'Unknown',
+    uid: pod.metadata?.uid,
+    persistentVolumeClaims: (pod.spec?.volumes ?? []).flatMap(v => v.persistentVolumeClaim ? [v.persistentVolumeClaim.claimName] : []),
     nodeName: pod.spec?.nodeName,
     serviceAccountName: pod.spec?.serviceAccountName,
     qosClass: pod.status?.qosClass,
@@ -350,6 +359,7 @@ function toConditionSnapshot(condition: {
 function toDeploymentSnapshot(deployment: k8s.V1Deployment): WorkloadSnapshot {
   return {
     kind: 'Deployment',
+    ...workloadEvidence(deployment),
     name: deployment.metadata?.name ?? 'unknown',
     namespace: deployment.metadata?.namespace ?? 'unknown',
     desired: deployment.spec?.replicas ?? 0,
@@ -363,6 +373,7 @@ function toDeploymentSnapshot(deployment: k8s.V1Deployment): WorkloadSnapshot {
 function toStatefulSetSnapshot(statefulSet: k8s.V1StatefulSet): WorkloadSnapshot {
   return {
     kind: 'StatefulSet',
+    ...workloadEvidence(statefulSet),
     name: statefulSet.metadata?.name ?? 'unknown',
     namespace: statefulSet.metadata?.namespace ?? 'unknown',
     desired: statefulSet.spec?.replicas ?? 0,
@@ -375,6 +386,7 @@ function toStatefulSetSnapshot(statefulSet: k8s.V1StatefulSet): WorkloadSnapshot
 function toDaemonSetSnapshot(daemonSet: k8s.V1DaemonSet): WorkloadSnapshot {
   return {
     kind: 'DaemonSet',
+    ...workloadEvidence(daemonSet),
     name: daemonSet.metadata?.name ?? 'unknown',
     namespace: daemonSet.metadata?.namespace ?? 'unknown',
     desired: daemonSet.status?.desiredNumberScheduled ?? 0,
@@ -388,6 +400,7 @@ function toDaemonSetSnapshot(daemonSet: k8s.V1DaemonSet): WorkloadSnapshot {
 function toReplicaSetSnapshot(replicaSet: k8s.V1ReplicaSet): WorkloadSnapshot {
   return {
     kind: 'ReplicaSet',
+    ...workloadEvidence(replicaSet),
     name: replicaSet.metadata?.name ?? 'unknown',
     namespace: replicaSet.metadata?.namespace ?? 'unknown',
     desired: replicaSet.spec?.replicas ?? 0,
@@ -400,6 +413,7 @@ function toReplicaSetSnapshot(replicaSet: k8s.V1ReplicaSet): WorkloadSnapshot {
 function toJobSnapshot(job: k8s.V1Job): WorkloadSnapshot {
   return {
     kind: 'Job',
+    ...workloadEvidence(job),
     name: job.metadata?.name ?? 'unknown',
     namespace: job.metadata?.namespace ?? 'unknown',
     desired: job.spec?.completions ?? 1,
@@ -528,6 +542,7 @@ function toCronJobSnapshot(cronJob: k8s.V1CronJob): CronJobSnapshot {
 
 function isInterestingPod(pod: k8s.V1Pod): boolean {
   const phase = pod.status?.phase;
+  if (phase === 'Succeeded') return false;
   const statuses = [...(pod.status?.initContainerStatuses ?? []), ...(pod.status?.containerStatuses ?? [])];
   const notReady = (pod.status?.conditions ?? []).some((condition) => condition.type === 'Ready' && condition.status !== 'True');
 
@@ -544,4 +559,31 @@ function isInterestingPod(pod: k8s.V1Pod): boolean {
 
 function sortEventsRecentFirst(a: EventSnapshot, b: EventSnapshot): number {
   return new Date(b.lastSeen ?? b.firstSeen ?? 0).getTime() - new Date(a.lastSeen ?? a.firstSeen ?? 0).getTime();
+}
+
+// Store fingerprints of potentially sensitive configuration, never environment values or ConfigMap contents.
+export function fingerprint(value: unknown): string {
+  function canonical(v: unknown): unknown {
+    if (Array.isArray(v)) return v.map(canonical);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, x]) => [k, canonical(x)]));
+    return v;
+  }
+  return createHash('sha256').update(JSON.stringify(canonical(value)) ?? 'null').digest('hex');
+}
+function workloadEvidence(w: k8s.V1Deployment | k8s.V1StatefulSet | k8s.V1DaemonSet | k8s.V1ReplicaSet | k8s.V1Job) {
+  const template = w.spec?.template;
+  return {
+    uid: w.metadata?.uid,
+    generation: w.metadata?.generation,
+    observedGeneration: w.status && 'observedGeneration' in w.status ? w.status.observedGeneration : undefined,
+    revision: w.metadata?.annotations?.['deployment.kubernetes.io/revision'],
+    ownerReferences: (w.metadata?.ownerReferences ?? []).map(o => ({ kind: o.kind, name: o.name, namespace: w.metadata?.namespace })),
+    configuration: {
+      templateHash: fingerprint(template),
+      containers: (template?.spec?.containers ?? []).map(c => ({ name: c.name, image: c.image ?? '',
+        requests: normalizeResourceList(c.resources?.requests), limits: normalizeResourceList(c.resources?.limits),
+        configurationHash: fingerprint({ env: c.env, envFrom: c.envFrom, command: c.command, args: c.args,
+          ports: c.ports, readinessProbe: c.readinessProbe, livenessProbe: c.livenessProbe, volumeMounts: c.volumeMounts }) })),
+    },
+  };
 }

@@ -1,0 +1,9 @@
+# Lets overlays (for example a local testing overlay) build on these manifests.
+# Skaffold's default deploy still applies them as raw YAML.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - deployment.yaml
+  - ingress.yaml

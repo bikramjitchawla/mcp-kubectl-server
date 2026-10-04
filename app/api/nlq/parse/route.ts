@@ -1,3 +1,6 @@
+import { requirePrincipal, AccessDenied } from '@/lib/tenancy/context';
+import { readJson } from '@/lib/http/json';
+import { protectedRoute } from '@/lib/auth/guard';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { hasLlmClient } from '@/lib/llm/client';
@@ -13,14 +16,15 @@ const requestSchema = z.object({
   context: z.string().trim().min(1).max(128).optional(),
 });
 
-export async function GET() {
+async function handleGET() {
   return NextResponse.json({
-    enabled: hasLlmClient(),
+    enabled: hasLlmClient() && requirePrincipal().tenant.allowAi,
     requires: hasLlmClient() ? [] : ['GROQ_API_KEY', 'OPENAI_API_KEY'],
   });
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
+  if (!requirePrincipal().tenant.allowAi) throw new AccessDenied('AI processing is disabled for this tenant.');
   if (!hasLlmClient()) {
     return NextResponse.json(
       {
@@ -34,7 +38,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const parsedRequest = requestSchema.safeParse(await req.json());
+  const parsedRequest = requestSchema.safeParse(await readJson(req));
   if (!parsedRequest.success) {
     return NextResponse.json(
       {
@@ -55,11 +59,12 @@ export async function POST(req: NextRequest) {
       inventory,
     });
 
+    intent.includeNodes = intent.includeNodes && requirePrincipal().tenant.allowNodes;
     return NextResponse.json(
       resolveIntent({
         intent,
         inventory,
-        context: parsedRequest.data.context,
+        context: requirePrincipal().tenant.context,
       }),
     );
   } catch (error) {
@@ -68,7 +73,11 @@ export async function POST(req: NextRequest) {
       resolvedContext: null,
       requiresConfirmation: false,
       confirmationPrompt: null,
-      error: error instanceof Error ? error.message : 'Could not extract a diagnostic scope from the input.',
-    });
+      error: 'Could not extract a diagnostic scope. Check tenant cluster access and provider availability.',
+    }, { status: 502 });
   }
 }
+
+export const GET = protectedRoute('viewer', handleGET);
+
+export const POST = protectedRoute('operator', handlePOST);

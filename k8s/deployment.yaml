@@ -7,6 +7,8 @@ metadata:
     app: mcp-diagnostics
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: mcp-diagnostics
@@ -18,10 +20,20 @@ spec:
         polaris.fairwinds.com/tagNotSpecified-exempt: "true"
     spec:
       serviceAccountName: mcp-diagnostics
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
         runAsGroup: 1001
+        fsGroup: 1001
+      volumes:
+        - name: tenant-config
+          secret: { secretName: diagnostics-tenants, defaultMode: 0440 }
+        - name: tenant-credentials
+          secret: { secretName: diagnostics-credentials, defaultMode: 0440 }
+        - name: diagnostic-data
+          persistentVolumeClaim:
+            claimName: diagnostic-data
       containers:
         - name: app
           # Build and push with:
@@ -34,17 +46,21 @@ spec:
           ports:
             - containerPort: 3000
               name: http
+          volumeMounts:
+            - { name: tenant-config, mountPath: /etc/diagnostics/config, readOnly: true }
+            - { name: tenant-credentials, mountPath: /etc/diagnostics/credentials, readOnly: true }
+            - name: diagnostic-data
+              mountPath: /app/.data
           env:
             - name: NODE_ENV
               value: production
-            # Optional: set MCP_API_KEY to require auth on all /api/* endpoints.
-            # When unset, the API is open (suitable for in-cluster-only access).
-            - name: MCP_API_KEY
+            - { name: APP_URL, value: "https://mcp-diagnostics.127.0.0.1.nip.io" }
+            - { name: TENANTS_CONFIG_FILE, value: "/etc/diagnostics/config/tenants.json" }
+            - { name: OIDC_ISSUER, value: "https://id.example.com/realms/diagnostics" }
+            - { name: OIDC_CLIENT_ID, value: "diagnostics" }
+            - name: OIDC_CLIENT_SECRET
               valueFrom:
-                secretKeyRef:
-                  name: mcp-diagnostics-secrets
-                  key: api-key
-                  optional: true
+                secretKeyRef: { name: diagnostics-oidc, key: client-secret }
             # Optional: Groq API key — takes priority over OpenAI when set.
             - name: GROQ_API_KEY
               valueFrom:
@@ -73,7 +89,7 @@ spec:
               memory: 512Mi
           readinessProbe:
             httpGet:
-              path: /api/health
+              path: /api/ready
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -96,3 +112,15 @@ spec:
     - port: 80
       targetPort: 3000
       name: http
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: diagnostic-data
+  namespace: mcp-diagnostics
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi

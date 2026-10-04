@@ -12,13 +12,13 @@ const diagnosticScopeSchema = z.object({
   namespace: namespaceSchema.default('default'),
   labelSelector: z.string().trim().min(1).max(256).optional(),
   workload: z.string().trim().min(1).max(128).optional(),
-  includeLogs: z.coerce.boolean().default(true),
+  includeLogs: z.boolean().default(true),
   tailLines: z.coerce.number().int().min(20).max(500).default(120),
   maxPods: z.coerce.number().int().min(1).max(200).default(60),
-  includeClusterResources: z.coerce.boolean().default(false),
-  includeNodes: z.coerce.boolean().default(true),
-  includeHpa: z.coerce.boolean().default(true),
-  enableAiSummary: z.coerce.boolean().default(true),
+  includeClusterResources: z.boolean().default(false),
+  includeNodes: z.boolean().default(false),
+  includeHpa: z.boolean().default(true),
+  enableAiSummary: z.boolean().default(false),
   context: z.string().trim().min(1).max(128).optional(),
 });
 
@@ -41,7 +41,7 @@ export const mcpRequestSchema = z
   })
   .passthrough();
 
-export function normalizeMcpRequest(input: MCPRequest): NormalizedMCPRequest {
+export function normalizeMcpRequest(input: unknown): NormalizedMCPRequest {
   const parsed = mcpRequestSchema.parse(input);
 
   return {

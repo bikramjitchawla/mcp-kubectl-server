@@ -1,9 +1,13 @@
 'use client';
 
+import { AuthGate, useTenant } from './components/AuthGate';
+import { InvestigationPanel } from './components/InvestigationPanel';
+import { apiFetch } from './components/api';
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Activity, Bot, ChevronDown, ClipboardList, Clock, Loader2, Search, Server, ShieldCheck, Terminal } from 'lucide-react';
+import { Activity, Bot, ChevronDown, ClipboardList, Clock, Loader2, Radar, Search, Server, ShieldCheck, Terminal } from 'lucide-react';
+import { CommandBlock } from './components/CommandBlock';
 import type { HistoryEntry } from '@/lib/store/history';
 import type { DiagnosticScope, MCPResponse } from '@/types/mcp';
 import type { ClarificationOptions, NLQParseResponse } from '@/lib/nlq/types';
@@ -11,7 +15,10 @@ import type { ClarificationOptions, NLQParseResponse } from '@/lib/nlq/types';
 const defaultGoal = 'Diagnose failing workloads and produce an incident-ready remediation plan.';
 type InputMode = 'form' | 'query';
 
-export default function HomePage() {
+export default function HomePage() { return <AuthGate><Workspace /></AuthGate>; }
+
+function Workspace() {
+  const tenant = useTenant();
   const [namespace, setNamespace] = useState('default');
   const [namespaces, setNamespaces] = useState<string[]>([]);
   const [workload, setWorkload] = useState('');
@@ -20,8 +27,8 @@ export default function HomePage() {
   const [labelSelector, setLabelSelector] = useState('');
   const [goal, setGoal] = useState(defaultGoal);
   const [includeLogs, setIncludeLogs] = useState(true);
-  const [enableAiSummary, setEnableAiSummary] = useState(true);
-  const [includeNodes, setIncludeNodes] = useState(true);
+  const [enableAiSummary, setEnableAiSummary] = useState(tenant.allowAi);
+  const [includeNodes, setIncludeNodes] = useState(tenant.allowNodes);
   const [context, setContext] = useState('');
   const [contexts, setContexts] = useState<string[]>([]);
   const [result, setResult] = useState<MCPResponse | null>(null);
@@ -40,7 +47,7 @@ export default function HomePage() {
   const fetchWorkloads = (ns: string, resetSelection = true) => {
     setWorkloadsLoading(true);
     if (resetSelection) setWorkload('');
-    fetch(`/api/workloads?namespace=${encodeURIComponent(ns)}`)
+    apiFetch(`/api/workloads?namespace=${encodeURIComponent(ns)}`)
       .then((r) => r.json())
       .then((data) => setWorkloads(data.workloads ?? []))
       .catch(() => setWorkloads([]))
@@ -48,7 +55,7 @@ export default function HomePage() {
   };
 
   useEffect(() => {
-    fetch('/api/contexts')
+    apiFetch('/api/contexts')
       .then((r) => r.json())
       .then((data) => {
         setContexts(data.contexts ?? []);
@@ -56,7 +63,7 @@ export default function HomePage() {
       })
       .catch(() => {});
 
-    fetch('/api/namespaces')
+    apiFetch('/api/namespaces')
       .then((r) => r.json())
       .then((data) => {
         const list: string[] = data.namespaces ?? [];
@@ -67,12 +74,12 @@ export default function HomePage() {
       })
       .catch(() => {});
 
-    fetch('/api/history')
+    apiFetch('/api/history')
       .then((r) => r.json())
       .then((data) => setHistory(data.runs ?? []))
       .catch(() => {});
 
-    fetch('/api/nlq/parse')
+    apiFetch('/api/nlq/parse')
       .then((r) => r.json())
       .then((data) => {
         setQueryModeAvailable(Boolean(data.enabled));
@@ -100,8 +107,8 @@ export default function HomePage() {
     setWorkload(scope.workload ?? '');
     setLabelSelector(scope.labelSelector ?? '');
     setIncludeLogs(scope.includeLogs);
-    setIncludeNodes(scope.includeNodes);
-    setEnableAiSummary(scope.enableAiSummary);
+    setIncludeNodes(scope.includeNodes && tenant.allowNodes);
+    setEnableAiSummary(scope.enableAiSummary && tenant.allowAi);
   };
 
   const parseQuery = async () => {
@@ -111,7 +118,7 @@ export default function HomePage() {
     setResolvedQueryContext(null);
 
     try {
-      const response = await fetch('/api/nlq/parse', {
+      const response = await apiFetch('/api/nlq/parse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, context: context || undefined }),
@@ -191,7 +198,8 @@ export default function HomePage() {
       },
     };
 
-    const response = await fetch('/api/mcp', {
+    try {
+    const response = await apiFetch('/api/mcp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -202,14 +210,21 @@ export default function HomePage() {
       setError(data.details ?? data.error ?? 'Diagnostic request failed');
     } else {
       setResult(data);
+      if (data.metadata.aiStatus === 'pending') {
+        void apiFetch(`/api/history/${encodeURIComponent(data.requestId)}/narrative`, { method: 'POST' })
+          .then(async response => { if (!response.ok) throw new Error('AI summary could not be generated; diagnostic evidence is still available.'); return response.json(); })
+          .then(updated => setResult(current => current?.requestId === updated.requestId ? updated : current))
+          .catch(e => setError(e.message));
+      }
       // Refresh history after a successful run
-      fetch('/api/history')
+      apiFetch('/api/history')
         .then((r) => r.json())
         .then((d) => setHistory(d.runs ?? []))
         .catch(() => {});
     }
 
-    setLoading(false);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Diagnostic request failed'); }
+    finally { setLoading(false); }
   };
 
   return (
@@ -226,6 +241,7 @@ export default function HomePage() {
         </div>
 
         <div className="form-grid">
+          {tenant.role === 'viewer' && <p className="helper">Viewer access: browse saved diagnostic runs. Ask an operator to collect new evidence.</p>}
           {contexts.length > 0 && (
             <div className="field">
               <label htmlFor="context">Cluster context</label>
@@ -350,13 +366,14 @@ export default function HomePage() {
               Collect recent logs from unhealthy pods
             </label>
             <label className="toggle">
-              <input type="checkbox" checked={includeNodes} onChange={(event) => setIncludeNodes(event.target.checked)} />
+              <input type="checkbox" checked={includeNodes} disabled={!tenant.allowNodes} onChange={(event) => setIncludeNodes(event.target.checked)} />
               Include node health (requires ClusterRole)
             </label>
             <label className="toggle">
               <input
                 type="checkbox"
                 checked={enableAiSummary}
+                disabled={!tenant.allowAi}
                 onChange={(event) => setEnableAiSummary(event.target.checked)}
               />
               Generate AI incident narrative
@@ -364,13 +381,13 @@ export default function HomePage() {
           </div>
 
           {inputMode === 'form' ? (
-            <button className="primary-button" onClick={() => runDiagnosis()} disabled={loading}>
-              {loading ? <Loader2 size={18} /> : <Search size={18} />}
+            <button className="primary-button" onClick={() => runDiagnosis()} disabled={loading || tenant.role === 'viewer'}>
+              {loading ? <Loader2 size={18} className="spin" /> : <Search size={18} />}
               {loading ? 'Running diagnostics' : 'Run diagnostics'}
             </button>
           ) : (
-            <button className="primary-button" onClick={parseQuery} disabled={queryParsing || !query.trim() || !queryModeAvailable}>
-              {queryParsing ? <Loader2 size={18} /> : <Search size={18} />}
+            <button className="primary-button" onClick={parseQuery} disabled={tenant.role === 'viewer' || queryParsing || !query.trim() || !queryModeAvailable}>
+              {queryParsing ? <Loader2 size={18} className="spin" /> : <Search size={18} />}
               {queryParsing ? 'Interpreting query' : 'Interpret query'}
             </button>
           )}
@@ -388,14 +405,15 @@ export default function HomePage() {
                 <li key={entry.requestId}>
                   <button
                     className="history-item"
+                    aria-current={result?.requestId === entry.requestId}
                     onClick={() => {
-                      fetch(`/api/history/${entry.requestId}`)
-                        .then((r) => r.json())
+                      apiFetch(`/api/history/${encodeURIComponent(entry.requestId)}`)
+                        .then(async (r) => { const data = await r.json(); if (!r.ok) throw new Error(data.error ?? 'Could not load run'); return data; })
                         .then((data) => {
                           setResult(data);
                           setError('');
                         })
-                        .catch(() => {});
+                        .catch((e) => setError(e.message));
                     }}
                   >
                     <span className={`status-dot ${entry.summary.health}`} />
@@ -424,15 +442,30 @@ export default function HomePage() {
           <>
             <section className="metric-grid" aria-label="diagnostic summary">
               <Metric label="Pods" value={String(result.summary.totalPods)} icon={<Activity size={18} />} />
-              <Metric label="Unhealthy" value={String(result.summary.unhealthyPods)} icon={<ClipboardList size={18} />} />
-              <Metric label="Warnings" value={String(result.summary.warningEvents)} icon={<Terminal size={18} />} />
+              <Metric
+                label="Unhealthy"
+                value={String(result.summary.unhealthyPods)}
+                icon={<ClipboardList size={18} />}
+                tone={result.summary.unhealthyPods > 0 ? 'danger' : 'success'}
+              />
+              <Metric
+                label="Warnings"
+                value={String(result.summary.warningEvents)}
+                icon={<Terminal size={18} />}
+                tone={result.summary.warningEvents > 0 ? 'warning' : 'success'}
+              />
               {result.snapshot.nodes.length > 0 && (
-                <Metric label="Nodes" value={`${result.snapshot.nodes.length - result.summary.notReadyNodes}/${result.snapshot.nodes.length}`} icon={<Server size={18} />} />
+                <Metric
+                  label="Nodes"
+                  value={`${result.snapshot.nodes.length - result.summary.notReadyNodes}/${result.snapshot.nodes.length}`}
+                  icon={<Server size={18} />}
+                  tone={result.summary.notReadyNodes > 0 ? 'danger' : 'success'}
+                />
               )}
               {result.snapshot.pvcs.length > 0 && (
                 <Metric label="PVCs" value={`${result.snapshot.pvcs.filter(p => p.phase === 'Bound').length}/${result.snapshot.pvcs.length}`} icon={<Activity size={18} />} />
               )}
-              <Metric label="AI" value={result.metadata.aiStatus} icon={<Bot size={18} />} />
+              <Metric label="AI" value={result.metadata.aiStatus} icon={<Bot size={18} />} tone="muted" />
             </section>
 
             <section className="panel">
@@ -457,9 +490,7 @@ export default function HomePage() {
                     </ul>
                     <div className="command-list">
                       {finding.automation.slice(0, 2).map((command) => (
-                        <code className="command" key={command.command}>
-                          {command.command}
-                        </code>
+                        <CommandBlock command={command.command} key={command.command} />
                       ))}
                     </div>
                   </article>
@@ -467,19 +498,29 @@ export default function HomePage() {
               </div>
             </section>
 
+            <InvestigationPanel key={result.requestId} result={result} />
+
             <section className="panel">
               <h3>Report</h3>
               <div className="report-md">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.output}</ReactMarkdown>
+              {result.aiNarrative && <><h3>AI narrative</h3><ReactMarkdown remarkPlugins={[remarkGfm]}>{result.aiNarrative}</ReactMarkdown></>}
               </div>
             </section>
           </>
+        ) : loading ? (
+          <DiagnosticSkeleton />
         ) : (
           <section className="panel">
-            <h3>Ready to diagnose</h3>
-            <p className="helper">
-              Start with a namespace, optionally narrow by workload or label selector, and run a read-only diagnostic pass.
-            </p>
+            <div className="empty-state">
+              <span className="empty-icon" aria-hidden="true">
+                <Radar size={22} />
+              </span>
+              <h3>Ready to diagnose</h3>
+              <p className="helper">
+                Start with a namespace, optionally narrow by workload or label selector, and run a read-only diagnostic pass.
+              </p>
+            </div>
           </section>
         )}
       </main>
@@ -487,14 +528,50 @@ export default function HomePage() {
   );
 }
 
-function Metric({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
+type MetricTone = 'danger' | 'warning' | 'success' | 'muted';
+
+function Metric({
+  label,
+  value,
+  icon,
+  tone,
+}: {
+  label: string;
+  value: string;
+  icon: React.ReactNode;
+  tone?: MetricTone;
+}) {
   return (
-    <div className="metric">
+    <div className="metric" data-tone={tone}>
       <span>
         {icon} {label}
       </span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+/** Keeps the workspace layout stable while a diagnostic pass is collecting evidence. */
+function DiagnosticSkeleton() {
+  return (
+    <>
+      <section className="metric-grid" aria-hidden="true">
+        {[0, 1, 2, 3].map((i) => (
+          <div className="skeleton skeleton-metric" key={i} />
+        ))}
+      </section>
+      <section className="panel" aria-busy="true">
+        <h3>Collecting evidence</h3>
+        <p className="helper" role="status">
+          Reading pods, controllers, events and logs from the cluster…
+        </p>
+        <div className="skeleton-stack" style={{ marginTop: 16 }} aria-hidden="true">
+          <div className="skeleton skeleton-line" />
+          <div className="skeleton skeleton-line" />
+          <div className="skeleton skeleton-line" />
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -557,7 +634,7 @@ function ResolvedContextPanel({
       </dl>
       <div className="inline-actions">
         <button className="primary-button" type="button" onClick={onConfirm} disabled={loading}>
-          {loading ? <Loader2 size={16} /> : <Search size={16} />}
+          {loading ? <Loader2 size={16} className="spin" /> : <Search size={16} />}
           {loading ? 'Running diagnostics' : 'Confirm'}
         </button>
         <button className="secondary-button" type="button" onClick={onEdit}>

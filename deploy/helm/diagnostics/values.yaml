@@ -1,0 +1,35 @@
+# Build/push your own image; there is no pre-published official image yet.
+image:
+  repository: ""
+  tag: ""
+appUrl: ""
+oidc:
+  issuer: ""
+  clientId: diagnostics
+  groupsClaim: groups
+  scopes: openid profile email
+  existingSecret: diagnostics-oidc
+  clientSecretKey: client-secret
+# Secrets are created separately so credentials never enter Helm release values.
+tenantsSecret: diagnostics-tenants
+credentialsSecret: diagnostics-credentials
+integrationSecret: ""
+persistence:
+  size: 2Gi
+  storageClass: ""
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  tlsSecret: ""
+networkPolicy:
+  enabled: true
+  # Namespace containing your ingress controller. Traffic is otherwise denied.
+  ingressNamespace: ingress-nginx

@@ -2,9 +2,23 @@
 
 A read-only Kubernetes incident triage platform built with Next.js. It collects live cluster state through the official Kubernetes JavaScript client, runs a deterministic rules engine to surface findings, and optionally generates an AI-powered incident narrative — all without ever writing to your cluster.
 
+**Install:** [Self-hosting, OIDC/Keycloak, tenant isolation and Helm](docs/SELF-HOSTING.md).
+
+This version requires explicit tenant configuration and authenticated access. It does not use ambient cluster credentials or automatically import legacy shared history.
+
 ---
 
 ## Features
+
+### Investigation and recovery workflows
+
+- **What changed?** — compare scoped snapshots for deployment revisions, images, resource settings, configuration fingerprints, service routing changes, and optional Prometheus CPU/memory evidence. Correlations are labeled as hypotheses.
+- **Related incidents** — group findings using owner references, service selectors, unhealthy node placement, and failing PVC dependencies, with evidence for each link.
+- **Fix and verify** — propose supported Deployment reversions to an observed healthy baseline, preview a pinned GitOps manifest change, create a reviewed GitHub PR, and verify sustained recovery after merge.
+- **Persistent history** — atomic disk storage, with baseline and verification evidence retained for fix workflows.
+
+See [Investigation workflow setup and limitations](docs/INVESTIGATION-WORKFLOWS.md) for GitHub targets, optional Prometheus, persistent storage, API examples, and the recovery contract.
+
 
 ### Diagnostic coverage
 
@@ -52,7 +66,7 @@ When `GROQ_API_KEY` or `OPENAI_API_KEY` is set and AI summary is enabled, the de
 - Next actions
 - Read-only automation commands
 
-The AI narrative is rendered as formatted markdown in the Report section. The LLM is instructed not to invent resources, commands, or causes — it can only explain and prioritise what the deterministic engine already found. The tool is fully functional without any LLM key.
+The deterministic report returns first; the dashboard requests the optional narrative separately so provider latency does not delay the evidence. The AI narrative is rendered as formatted markdown in the Report section. The LLM is instructed not to invent resources, commands, or causes — it can only explain and prioritise what the deterministic engine already found. The tool is fully functional without any LLM key.
 
 **LLM priority:** Groq (`llama-3.3-70b-versatile`) is used when `GROQ_API_KEY` is set; OpenAI (`gpt-4o-mini`) is the fallback.
 
@@ -62,7 +76,7 @@ The AI narrative is rendered as formatted markdown in the Report section. The LL
 - **Namespace dropdown** — auto-populated from the live cluster; falls back to a text input when the cluster is unreachable
 - **Workload dropdown** — refreshes automatically when the namespace changes
 - **Cluster context selector** — switch between kubeconfig contexts without restarting
-- **Diagnostic run history** — last 50 runs shown in the sidebar; click any entry to reload its full result
+- **Diagnostic run history** — recent persisted runs shown in the sidebar; click any entry to reload its full result
 - **Metric tiles** — pod count, unhealthy pods, warning events, node health, PVC health, AI status
 - **Findings panel** — top 6 findings with severity badge, evidence list, and read-only commands
 - **Rendered markdown report** — the AI narrative or deterministic report is rendered with headings, code blocks, tables, and lists
@@ -80,119 +94,55 @@ The AI narrative is rendered as formatted markdown in the Report section. The LL
 | `GET` | `/api/contexts` | List kubeconfig contexts |
 | `GET` | `/api/history` | List recent diagnostic runs |
 | `GET` | `/api/history/:id` | Retrieve a full run by ID |
+| `POST` | `/api/history/:id/narrative` | Generate optional AI narrative for saved evidence |
 | `GET` | `/api/health` | Health check (no cluster access, used by k8s probes) |
 
-### Enterprise capabilities
+### Authentication and isolation
 
-- **API key authentication** — protect `/api/*` with `X-API-Key` header; health endpoint is always unauthenticated
-- **Rate limiting** — 20 requests per minute per IP
-- **Partial results** — RBAC errors are recorded as collection warnings rather than failing the whole run
-- **Evidence-before-AI** — deterministic findings always run first; AI only summarises, never invents
-- **Kubernetes-ready** — liveness and readiness probes on `/api/health`, `allowPrivilegeEscalation: false`, no root container
+- Generic OIDC sign-in with a Keycloak setup guide; authorization code, PKCE, state, nonce and signed ID-token validation.
+- Tenant workspaces with viewer/operator/admin roles, separate Kubernetes credentials and namespace allowlists.
+- Tenant-partitioned history, baselines, fix plans and integration configuration.
+- Tenant API keys for automation; no shared global key or anonymous access.
+- Per-identity and per-tenant rate limits, bounded concurrent collection, paginated Kubernetes reads and deadlines.
+- Non-root Helm deployment with a PVC, read-only credential mounts, ingress policy and separate readiness/liveness checks.
 
----
+## Install or develop
 
-## Quick start (local development)
+Follow [the installation guide](docs/SELF-HOSTING.md) to provision tenant credentials, configure your OIDC provider, create Secrets, and install the bundled Helm chart. The source repository is the download; build an image in your own registry. No release or image is published automatically.
 
-```bash
-npm install
+For local development, configure `APP_URL=http://localhost:3000` and `TENANTS_CONFIG_FILE` in `.env.local`, with explicit tenant kubeconfigs and either OIDC or a tenant API key, then run:
+
+```sh
+npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000`. The app reads your local `~/.kube/config` and populates the context selector automatically.
+## Validation
 
-To enable AI narrative, add to `.env.local`:
-
-```bash
-GROQ_API_KEY=your-groq-key          # preferred
-# or
-OPENAI_API_KEY=your-openai-key      # fallback
+```sh
+npm test
+npm run typecheck
+npm run build
 ```
 
----
-
-## Testing
-
-```bash
-npm run test          # run all unit tests
-npm run test:watch    # watch mode
-npm run typecheck     # TypeScript type check
-```
-
-The test suite covers all 14 diagnostic categories and the NLQ resolver without requiring a kubeconfig or LLM key.
-
----
-
-## Deploying to a Kind cluster
-
-### Prerequisites
-
-| Tool | Purpose |
-|---|---|
-| [Docker](https://www.docker.com/) | Kind runs nodes as containers |
-| [Kind](https://kind.sigs.k8s.io/) | Local Kubernetes cluster |
-| [kubectl](https://kubernetes.io/docs/tasks/tools/) | Cluster CLI |
-| [Skaffold](https://skaffold.dev/) | Build + deploy |
-| [Helm](https://helm.sh/) | Installs Traefik and cert-manager |
-
-### 1. Spin up the cluster
-
-Use the companion cluster repository which sets up Kind with Calico CNI, MetalLB, cert-manager, Traefik ingress, and a local Docker registry:
-
-```bash
-git clone https://github.com/bikramjitchawla/Kubernetes-cluster-development.git
-cd Kubernetes-cluster-development
-./start.sh
-```
-
-The script creates the cluster, starts a local Docker registry at `localhost:5001`, and installs all components. Takes 3–5 minutes on first run.
-
-### 2. Create the secret
-
-```bash
-cp k8s/secret.example.yaml k8s/secret.yaml
-# edit k8s/secret.yaml with your base64-encoded values
-kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/secret.yaml
-```
-
-If you skip this step the app runs without API key auth and without AI narrative.
-
-### 3. Deploy with Skaffold
-
-```bash
-skaffold run
-```
-
-Builds the image, pushes it to the local registry, and applies all manifests. The app is available at:
-
-```
-https://mcp-diagnostics.127.0.0.1.nip.io
-```
-
-Accept the self-signed cert issued by cert-manager. No `/etc/hosts` entry is needed — nip.io resolves `*.127.0.0.1.nip.io` to `127.0.0.1` via public DNS.
-
-### 4. Tear down
-
-```bash
-skaffold delete
-cd Kubernetes-cluster-development
-./delete.sh
-```
-
----
+Tests cover deterministic diagnostics, tenant isolation, authentication/CSRF/roles, signed OIDC token validation, workload ownership, bounded collection and reviewed recovery workflows. CI also checks the container build, production dependency audit and Helm chart.
 
 ## Environment variables
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `MCP_API_KEY` | No | — | When set, all `/api/*` requests (except `/api/health`) must supply a matching `X-API-Key` header |
-| `GROQ_API_KEY` | No | — | Enables AI narrative via Groq (preferred over OpenAI) |
-| `GROQ_MODEL` | No | `llama-3.3-70b-versatile` | Groq model for narrative and NLQ parsing |
-| `OPENAI_API_KEY` | No | — | Enables AI narrative via OpenAI (used when no Groq key is set) |
-| `OPENAI_MODEL` | No | `gpt-4o-mini` | OpenAI model |
-| `APP_VERSION` | No | `0.1.0` | Reported by the health endpoint |
-| `BUILD_ID` | No | `local` | Reported by the health endpoint |
+| Variable | Purpose |
+|---|---|
+| `APP_URL` | Canonical application origin; HTTPS required in production |
+| `TENANTS_CONFIG_FILE` | Required administrator-managed tenant JSON configuration |
+| `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | Browser sign-in provider configuration |
+| `OIDC_GROUPS_CLAIM` | Top-level ID-token array claim; defaults to `groups` |
+| `OIDC_SCOPES` | Defaults to `openid profile email` |
+| `DIAGNOSTICS_DATA_DIR` | Persistent tenant records and server-side sessions; defaults to `.data` |
+| `DIAGNOSTICS_HISTORY_LIMIT` | Unpinned history retention per tenant; default 200, maximum 2,000 |
+| `GROQ_API_KEY`, `GROQ_MODEL` | Optional AI provider; requires tenant `allowAi` |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | Optional fallback AI provider; requires tenant `allowAi` |
+| `APP_VERSION`, `BUILD_ID` | Health endpoint metadata |
+
+GitHub and Prometheus credentials/targets are configured per tenant. See [integration configuration](docs/SELF-HOSTING.md#optional-integrations).
 
 ---
 
@@ -208,13 +158,13 @@ curl -X POST https://mcp-diagnostics.127.0.0.1.nip.io/api/mcp \
     "agent": "kubernetes-diagnoser",
     "goal": "Find why checkout is failing",
     "input_context": {
-      "namespace": "production",
+      "namespace": "team-a",
       "workload": "checkout",
-      "context": "kind-test-cluster",
+      "context": "team-a",
       "includeLogs": true,
-      "includeNodes": true,
+      "includeNodes": false,
       "includeHpa": true,
-      "enableAiSummary": true,
+      "enableAiSummary": false,
       "tailLines": 120,
       "maxPods": 60
     }
@@ -226,13 +176,13 @@ curl -X POST https://mcp-diagnostics.127.0.0.1.nip.io/api/mcp \
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `namespace` | string | `default` | Namespace to inspect |
-| `context` | string | current | Kubeconfig context |
+| `context` | string | tenant context | Must match the configured tenant cluster |
 | `workload` | string | — | Filter by workload name |
 | `labelSelector` | string | — | Standard label selector e.g. `app=checkout` |
 | `includeLogs` | boolean | `true` | Collect logs from unhealthy pods |
-| `includeNodes` | boolean | `true` | Collect node conditions (requires ClusterRole) |
+| `includeNodes` | boolean | `false` | Collect node conditions (requires ClusterRole) |
 | `includeHpa` | boolean | `true` | Collect HPA status |
-| `enableAiSummary` | boolean | `true` | Generate AI narrative |
+| `enableAiSummary` | boolean | `false` | Generate AI narrative |
 | `tailLines` | number | `120` | Log lines per container (20–500) |
 | `maxPods` | number | `60` | Max pods to collect (1–200) |
 
@@ -260,7 +210,7 @@ curl -X POST https://mcp-diagnostics.127.0.0.1.nip.io/api/mcp \
       "severity": "critical",
       "category": "runtime",
       "title": "Container app is in CrashLoopBackOff",
-      "resource": { "kind": "Pod", "namespace": "production", "name": "checkout-0" },
+      "resource": { "kind": "Pod", "namespace": "team-a", "name": "checkout-0" },
       "signal": "CrashLoopBackOff",
       "evidence": ["Restart count: 10", "Last exit code: 1"],
       "impact": "Pod is not serving traffic.",
@@ -291,8 +241,8 @@ curl -X POST https://mcp-diagnostics.127.0.0.1.nip.io/api/nlq/parse \
 
 ```jsonc
 {
-  "intent": { "namespace": "production", "workload": "checkout", "focus": ["pods", "logs"], "confidence": "high", ... },
-  "resolvedContext": { "namespace": "production", "workload": "checkout", "includeLogs": true, ... },
+  "intent": { "namespace": "team-a", "workload": "checkout", "focus": ["pods", "logs"], "confidence": "high", ... },
+  "resolvedContext": { "namespace": "team-a", "workload": "checkout", "includeLogs": true, ... },
   "requiresConfirmation": false,
   "confirmationPrompt": null
 }
@@ -357,10 +307,12 @@ Returns `503` when no LLM key is configured. Call `GET /api/nlq/parse` first to 
 │   ├── kubernetes/
 │   │   └── collector.ts            # Kubernetes API client and snapshot builder
 │   ├── store/
-│   │   └── history.ts              # In-memory run history (last 50 runs)
-│   ├── ratelimit.ts                # Sliding-window rate limiter
+│   │   └── history.ts              # Persistent run history and baseline selection
+│   ├── ratelimit.ts                # Bounded fixed-window rate limiter
 │   └── validation.ts               # Zod request schema and normalisation
-├── middleware.ts                   # API key authentication
+├── lib/auth/                       # OIDC, server sessions and route authorization
+├── lib/tenancy/                    # Identity bindings, roles and scope authorization
+├── deploy/helm/                    # Supported self-hosted installation
 ├── types/
 │   └── mcp.ts                      # Full TypeScript type contract
 ├── k8s/                            # Kubernetes manifests
@@ -377,6 +329,6 @@ Returns `503` when no LLM key is configured. Call `GET /api/nlq/parse` first to 
 
 ## RBAC requirements
 
-The minimum permissions are in [k8s/rbac.yaml](k8s/rbac.yaml). The app uses a dedicated `mcp-diagnostics` ServiceAccount with a read-only ClusterRole covering pods, nodes, events, services, endpoints, HPAs, PVCs, CronJobs, and logs. No write permissions are granted at any level.
+Each tenant uses a dedicated read-only credential restricted to its configured namespaces. Start from [the namespace Role/RoleBinding example](deploy/examples/tenant-rbac.yaml). The application service account has no cluster-wide permissions and no automatically mounted token. Node access requires an explicit tenant capability and additional cluster-level permission.
 
-When running locally, your kubeconfig user's permissions apply. RBAC errors are surfaced as collection warnings in `metadata.errors` rather than crashing the run.
+See [the self-hosting guide](docs/SELF-HOSTING.md) for credential rotation, isolation checks, storage limits, migration from shared history, and the shared-hosted roadmap.

@@ -1,8 +1,12 @@
+import { authorizeScope, currentPrincipal } from '@/lib/tenancy/context';
+import { compareRuns } from '@/lib/investigation/compare';
+import { groupIncidents } from '@/lib/investigation/group';
+import { collectMetrics } from '@/lib/investigation/metrics';
 import { analyzeKubernetesSnapshot } from '@/lib/diagnostics/analyzer';
 import { buildRunbook, buildSummary, formatMarkdownReport } from '@/lib/diagnostics/formatter';
 import { normalizeMcpRequest } from '@/lib/validation';
 import { KubernetesDiagnosticCollector } from '@/tools/kubectlTool';
-import { saveRun } from '@/lib/store/history';
+import { findBaseline, saveRun } from '@/lib/store/history';
 import { DiagnosticFinding, MCPRequest, MCPResponse } from '@/types/mcp';
 import { buildLlmClient, LlmClient } from '@/lib/llm/client';
 
@@ -13,17 +17,21 @@ export class MCPAgentRunner {
     this.llm = buildLlmClient();
   }
 
-  async run(mcp: MCPRequest): Promise<MCPResponse> {
+  async run(mcp: unknown, deferNarrative = false): Promise<MCPResponse> {
     const request = normalizeMcpRequest(mcp);
+    request.input_context = authorizeScope(request.input_context);
     const collector = new KubernetesDiagnosticCollector(request.input_context.context);
     const snapshot = await collector.collect(request.input_context);
+    snapshot.metrics = await collectMetrics(snapshot);
     const findings = analyzeKubernetesSnapshot(snapshot);
     const summary = buildSummary(request.input_context, snapshot, findings);
     const runbook = buildRunbook(findings);
     const deterministicReport = formatMarkdownReport(summary, findings, snapshot, runbook);
 
     const model = this.llm?.model ?? '';
-    const ai = await this.generateAiNarrative({
+    const ai: { status: MCPResponse['metadata']['aiStatus']; text?: string } = deferNarrative
+      ? { status: !request.input_context.enableAiSummary ? 'disabled' : this.llm ? 'pending' : 'skipped' }
+      : await this.generateAiNarrative({
       enabled: request.input_context.enableAiSummary,
       model,
       goal: request.goal,
@@ -32,8 +40,8 @@ export class MCPAgentRunner {
     });
 
     const response: MCPResponse = {
-      requestId: request.request_id,
-      status: snapshot.accessErrors.length > 0 ? 'partial' : 'ok',
+      requestId: crypto.randomUUID(),
+      status: snapshot.accessErrors.length > 0 || snapshot.coverage?.podsTruncated ? 'partial' : 'ok',
       generatedAt: new Date().toISOString(),
       scope: request.input_context,
       summary,
@@ -51,6 +59,25 @@ export class MCPAgentRunner {
       },
     };
 
+    response.incidents = groupIncidents(snapshot, findings);
+    response.investigation = compareRuns(response, findBaseline(response));
+    response.output += '\n\n## What changed?\n' +
+      response.investigation.changes.map(c => `- ${c.resource.kind}/${c.resource.name}: ${c.field}: ${JSON.stringify(c.before)} → ${JSON.stringify(c.after)}`).join('\n') +
+      '\n' + response.investigation.limitations.join('\n') +
+      '\n\n## Related incidents\n' + response.incidents.map(i => `- ${i.title}. ${i.interpretation}`).join('\n') +
+      '\n\nChanges are observations. Their relationship to symptoms remains a hypothesis, not proven causation.';
+    saveRun(response);
+    return response;
+  }
+
+  async completeNarrative(response: MCPResponse): Promise<MCPResponse> {
+    authorizeScope({ ...response.scope, enableAiSummary: true });
+    if (response.metadata.aiStatus === 'success') return response;
+    const ai = await this.generateAiNarrative({ enabled: true, model: this.llm?.model ?? '',
+      goal: `Explain the observed incident in ${response.scope.namespace}`, findings: response.findings, report: response.output });
+    response.aiNarrative = ai.text;
+    response.metadata.aiStatus = ai.status;
+    response.metadata.model = ai.status === 'success' ? this.llm?.model : undefined;
     saveRun(response);
     return response;
   }
@@ -93,7 +120,7 @@ export class MCPAgentRunner {
             ].join('\n'),
           },
         ],
-      });
+      }, { signal: currentPrincipal()?.signal });
 
       return { status: 'success', text: response.choices[0]?.message?.content ?? input.report };
     } catch {

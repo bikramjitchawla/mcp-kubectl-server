@@ -1,3 +1,4 @@
+import { currentPrincipal } from '@/lib/tenancy/context';
 import { z } from 'zod';
 import { buildLlmClient } from '@/lib/llm/client';
 import type { ClusterInventory, ExtractedIntent } from './types';
@@ -64,7 +65,7 @@ export async function parseNaturalLanguageQuery(input: {
         content: buildNlqPrompt(input.query, input.inventory),
       },
     ],
-  });
+  }, { signal: currentPrincipal()?.signal });
 
   const content = response.choices[0]?.message?.content;
   if (!content) {

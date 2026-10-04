@@ -1,0 +1,30 @@
+[
+  {
+    "id": "team-a",
+    "name": "Team A",
+    "context": "team-a",
+    "kubeconfig": "/etc/diagnostics/credentials/team-a.yaml",
+    "namespaces": ["team-a"],
+    "allowNodes": false,
+    "allowAi": false,
+    "bindings": [
+      { "role": "viewer", "groups": ["/diagnostics/team-a/viewers"] },
+      { "role": "operator", "groups": ["/diagnostics/team-a/operators"] },
+      { "role": "admin", "groups": ["/diagnostics/team-a/admins"] }
+    ]
+  },
+  {
+    "id": "team-b",
+    "name": "Team B",
+    "context": "team-b",
+    "kubeconfig": "/etc/diagnostics/credentials/team-b.yaml",
+    "namespaces": ["team-b"],
+    "allowNodes": false,
+    "allowAi": false,
+    "bindings": [
+      { "role": "viewer", "groups": ["/diagnostics/team-b/viewers"] },
+      { "role": "operator", "groups": ["/diagnostics/team-b/operators"] },
+      { "role": "admin", "groups": ["/diagnostics/team-b/admins"] }
+    ]
+  }
+]

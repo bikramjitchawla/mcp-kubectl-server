@@ -11,6 +11,7 @@ export function buildLlmClient(): LlmClient | undefined {
     return {
       client: new OpenAI({
         apiKey: process.env.GROQ_API_KEY,
+        timeout: 12000, maxRetries: 0,
         baseURL: 'https://api.groq.com/openai/v1',
       }),
       model: process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile',
@@ -20,7 +21,7 @@ export function buildLlmClient(): LlmClient | undefined {
 
   if (process.env.OPENAI_API_KEY) {
     return {
-      client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY }),
+      client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 12000, maxRetries: 0 }),
       model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
       provider: 'openai',
     };

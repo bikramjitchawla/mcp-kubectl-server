@@ -1,0 +1,29 @@
+{
+  "clientId": "diagnostics",
+  "name": "Kubernetes diagnostics",
+  "protocol": "openid-connect",
+  "enabled": true,
+  "publicClient": false,
+  "standardFlowEnabled": true,
+  "implicitFlowEnabled": false,
+  "directAccessGrantsEnabled": false,
+  "serviceAccountsEnabled": false,
+  "redirectUris": ["https://diagnostics.example.com/api/auth/callback"],
+  "webOrigins": ["https://diagnostics.example.com"],
+  "attributes": { "pkce.code.challenge.method": "S256" },
+  "protocolMappers": [
+    {
+      "name": "diagnostics-groups",
+      "protocol": "openid-connect",
+      "protocolMapper": "oidc-group-membership-mapper",
+      "consentRequired": false,
+      "config": {
+        "claim.name": "groups",
+        "full.path": "true",
+        "id.token.claim": "true",
+        "access.token.claim": "false",
+        "userinfo.token.claim": "false"
+      }
+    }
+  ]
+}

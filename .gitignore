@@ -7,3 +7,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+.data/
+
+# Runtime tenant configuration and credentials
+/config/
+/deploy/local/

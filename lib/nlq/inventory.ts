@@ -1,26 +1,17 @@
+import { tenantKubeConfig, boundedApi } from '@/lib/kubernetes/client';
+import { requirePrincipal } from '@/lib/tenancy/context';
 import * as k8s from '@kubernetes/client-node';
 import type { ClusterInventory, WorkloadInventoryItem } from './types';
 
 export async function collectClusterInventory(context?: string): Promise<ClusterInventory> {
-  const kubeConfig = new k8s.KubeConfig();
-  if (process.env.KUBERNETES_SERVICE_HOST) {
-    kubeConfig.loadFromCluster();
-  } else {
-    kubeConfig.loadFromDefault();
-    if (context) {
-      kubeConfig.currentContext = context;
-    }
+  const kubeConfig = tenantKubeConfig(context);
+  const appsApi = boundedApi(kubeConfig.makeApiClient(k8s.AppsV1Api));
+  const namespaces = [...requirePrincipal().tenant.namespaces].sort();
+  const workloadGroups: WorkloadInventoryItem[][] = [];
+  // Bound cluster fan-out regardless of tenant namespace count.
+  for (let i = 0; i < namespaces.length; i += 4) {
+    workloadGroups.push(...await Promise.all(namespaces.slice(i, i + 4).map(namespace => listNamespaceWorkloads(appsApi, namespace))));
   }
-
-  const coreApi = kubeConfig.makeApiClient(k8s.CoreV1Api);
-  const appsApi = kubeConfig.makeApiClient(k8s.AppsV1Api);
-  const namespaceResponse = await coreApi.listNamespace();
-  const namespaces = (namespaceResponse.items ?? [])
-    .map((namespace) => namespace.metadata?.name ?? '')
-    .filter(Boolean)
-    .sort();
-
-  const workloadGroups = await Promise.all(namespaces.map((namespace) => listNamespaceWorkloads(appsApi, namespace)));
 
   return {
     namespaces,
@@ -35,34 +26,37 @@ async function listNamespaceWorkloads(
   const [deployments, statefulSets, daemonSets] = await Promise.all([
     appsApi
       .listNamespacedDeployment({ namespace })
-      .then((response) =>
-        response.items.map((item) => ({
+      .then((response) => {
+        if (response.metadata?._continue) throw new Error('Inventory limit reached.');
+        return response.items.map((item) => ({
           namespace,
           kind: 'Deployment' as const,
           name: item.metadata?.name ?? '',
-        })),
-      )
-      .catch(() => []),
+        }));
+      })
+      .catch(() => { throw new Error('Tenant workload inventory is incomplete.'); }),
     appsApi
       .listNamespacedStatefulSet({ namespace })
-      .then((response) =>
-        response.items.map((item) => ({
+      .then((response) => {
+        if (response.metadata?._continue) throw new Error('Inventory limit reached.');
+        return response.items.map((item) => ({
           namespace,
           kind: 'StatefulSet' as const,
           name: item.metadata?.name ?? '',
-        })),
-      )
-      .catch(() => []),
+        }));
+      })
+      .catch(() => { throw new Error('Tenant workload inventory is incomplete.'); }),
     appsApi
       .listNamespacedDaemonSet({ namespace })
-      .then((response) =>
-        response.items.map((item) => ({
+      .then((response) => {
+        if (response.metadata?._continue) throw new Error('Inventory limit reached.');
+        return response.items.map((item) => ({
           namespace,
           kind: 'DaemonSet' as const,
           name: item.metadata?.name ?? '',
-        })),
-      )
-      .catch(() => []),
+        }));
+      })
+      .catch(() => { throw new Error('Tenant workload inventory is incomplete.'); }),
   ]);
 
   return [...deployments, ...statefulSets, ...daemonSets].filter((item) => item.name);

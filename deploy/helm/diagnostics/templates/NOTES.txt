@@ -1,0 +1,12 @@
+Kubernetes diagnostics is installed at {{ .Values.appUrl }}.
+
+1. Ensure the OIDC provider allows this exact callback:
+   {{ .Values.appUrl }}/api/auth/callback
+2. Assign users to the groups configured in your tenants.json Secret.
+3. Check the deployment readiness:
+   kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ .Release.Name }}
+4. Sign in and verify that two tenant users see separate namespaces and history.
+
+This chart uses one replica and local persistent storage. Do not increase replicas.
+Tenant kubeconfigs require independently scoped and regularly rotated credentials.
+See docs/SELF-HOSTING.md for Keycloak, RBAC, retention and migration instructions.

@@ -9,13 +9,14 @@ export function buildSummary(
   const highFindings = findings.filter((finding) => finding.severity === 'high').length;
   const unhealthyPods = snapshot.pods.filter((pod) => {
     const ready = pod.conditions.find((condition) => condition.type === 'Ready');
-    return pod.phase !== 'Running' || ready?.status === 'False' || pod.restartCount > 0;
+    if (pod.phase === 'Succeeded') return false;
+    return pod.phase !== 'Running' || ready?.status !== 'True' || pod.containers.some(c => !c.ready);
   }).length;
   const notReadyNodes = snapshot.nodes.filter((n) => !n.ready).length;
   const pendingPvcs = snapshot.pvcs.filter((p) => p.phase !== 'Bound').length;
 
   return {
-    health: criticalFindings > 0 ? 'critical' : highFindings > 0 || unhealthyPods > 0 ? 'degraded' : 'healthy',
+    health: criticalFindings > 0 ? 'critical' : highFindings > 0 || unhealthyPods > 0 ? 'degraded' : snapshot.accessErrors.length > 0 || snapshot.coverage?.podsTruncated ? 'unknown' : 'healthy',
     namespace: scope.namespace,
     totalPods: snapshot.pods.length,
     unhealthyPods,

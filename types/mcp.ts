@@ -1,3 +1,4 @@
+import type { WorkloadConfiguration, Investigation, IncidentGroup, MetricsEvidence } from './investigation';
 export type OutputFormat = 'markdown' | 'json';
 
 export type Severity = 'info' | 'low' | 'medium' | 'high' | 'critical';
@@ -92,6 +93,8 @@ export interface PodSnapshot {
   name: string;
   namespace: string;
   phase: string;
+  uid?: string;
+  persistentVolumeClaims?: string[];
   nodeName?: string;
   serviceAccountName?: string;
   qosClass?: string;
@@ -106,6 +109,12 @@ export interface PodSnapshot {
 }
 
 export interface WorkloadSnapshot {
+  uid?: string;
+  generation?: number;
+  observedGeneration?: number;
+  revision?: string;
+  ownerReferences?: KubernetesResourceRef[];
+  configuration?: WorkloadConfiguration;
   kind: 'Deployment' | 'StatefulSet' | 'DaemonSet' | 'ReplicaSet' | 'Job';
   name: string;
   namespace: string;
@@ -210,6 +219,9 @@ export interface KubernetesSnapshot {
   pvcs: PVCSnapshot[];
   cronJobs: CronJobSnapshot[];
   accessErrors: AccessError[];
+  coverage?: { podsTruncated: boolean };
+  configMaps?: { name: string; namespace: string; uid?: string; digest: string }[];
+  metrics?: MetricsEvidence;
 }
 
 export interface AutomationCommand {
@@ -290,11 +302,13 @@ export interface MCPResponse {
   runbook: string[];
   output: string;
   aiNarrative?: string;
+  investigation?: Investigation;
+  incidents?: IncidentGroup[];
   snapshot: KubernetesSnapshot;
   metadata: {
     collector: string;
     analyzer: string;
-    aiStatus: 'disabled' | 'skipped' | 'success' | 'failed';
+    aiStatus: 'disabled' | 'skipped' | 'pending' | 'success' | 'failed';
     model?: string;
     errors: AccessError[];
   };
